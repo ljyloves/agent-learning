@@ -2,7 +2,7 @@ import os
 
 from llm_client import HelloAgentsLLM
 from dotenv import load_dotenv
-from tools import  search
+from tools import  safe_calculator, search
 
 from ReAct.executor import ToolExecutor
 from ReAct.agent import ReActAgent
@@ -71,9 +71,23 @@ def demo_react():
             "required": ["query"]
         },
         func = search)
+    toolExecutor.register_tool(
+        name = "calculate", 
+        description = "一个安全的计算器函数，仅允许基本的数学表达式", 
+        parameters={
+            "type": "object",
+            "properties": {
+                "expression": {
+                    "type": "string",
+                    "description": "要计算的数学表达式"
+                }
+            },
+            "required": ["expression"]
+        },
+        func = safe_calculator)
 
     agent = ReActAgent(llm_client=llmClient, tool_executor=toolExecutor, max_steps=5)
-    question = "截至2026年5月，中国票房最高的男演员是谁？"
+    question = "计算 (123 + 456) * 789 / 12 = ? 的结果"
     print(f"用户问题: {question}")
     final_answer = agent.run(question)
     print("\n================ 最终答案 ================")

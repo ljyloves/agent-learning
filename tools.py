@@ -35,3 +35,20 @@ def search(query: str) -> str:
     except Exception as e:
         print(f"❌ 搜索时发生错误: {e}")
         return f"搜索时发生错误: {e}"
+    
+def safe_calculator(expression: str) -> str:
+    """
+    一个安全的计算器函数，仅允许基本的数学表达式。
+    :param expression: 要计算的数学表达式
+    :return: 计算结果或错误信息
+    """
+    print(f"🧮 正在计算表达式: {expression}")
+    try:
+        # 仅允许数字、运算符和括号
+        if not all(c in "0123456789+-*/(). " for c in expression):
+            raise ValueError("表达式包含非法字符。仅允许数字、运算符和括号。")
+        result = eval(expression)
+        return str(result)
+    except Exception as e:
+        print(f"❌ 计算时发生错误: {e}")
+        return f"计算时发生错误: {e}"
