@@ -87,7 +87,7 @@ def demo_react():
         func = safe_calculator)
 
     agent = ReActAgent(llm_client=llmClient, tool_executor=toolExecutor, max_steps=5)
-    question = "计算 (123 + 456) * 789 / 12 = ? 的结果"
+    question = "计算 (1236 + 4056) * 789 / 123 = ? 的结果"
     print(f"用户问题: {question}")
     final_answer = agent.run(question)
     print("\n================ 最终答案 ================")

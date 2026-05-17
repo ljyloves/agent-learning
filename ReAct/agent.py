@@ -45,12 +45,33 @@ class ReActAgent:
 
             tool_func = self.tool_executor.getTool(tool_name)
             if not tool_func:
-                observation = f"工具 '{tool_name}' 未找到。"
+                available_tools = list(self.tool_executor.tools.keys())
+                observation = (
+                    f"❌ 找不到名为 '{tool_name}' 的工具。\n"
+                    f"💡 修正建议: 你产生了工具幻觉。当前系统只支持以下工具: {available_tools}。请务必从中选择一个进行调用！"
+                )
             else:
                 try:
                     observation = str(tool_func(**tool_args))
+                except TypeError as e:
+                    #针对参数类型错误的拦截 (比如参数应该是字符串，但传成了数字)
+                    observation = (
+                        f"❌ 参数类型错误: {str(e)}。\n"
+                        f"💡 修正建议: 请检查传入参数的类型是否正确，是否符合该工具的 parameters 规范。请重新尝试调用。"
+                    )
+                except ValueError as e:
+                    #针对参数值错误的拦截 (比如参数值超出范围)
+                    observation = (
+                        f"❌ 参数值错误: {str(e)}。\n"
+                        f"💡 修正建议: 请检查传入参数的值是否在合理范围内，是否符合该工具的 parameters 规范。请重新尝试调用。"
+                    )
                 except Exception as e:
-                    observation = f"执行工具 '{tool_name}' 时发生错误: {e}"
+                    #其他未知错误
+                    observation =(
+                        f"❌ 未知执行失败: {str(e)}。\n"
+                        f"💡 修正建议: 该工具当前可能不可用。如果你之前已经失败过，请立刻停止尝试该工具，改用其他工具，或者直接向用户说明情况。"
+                    )
+
             print(f"工具执行结果: {observation}")
             messages.append({
                 "role": "tool",
