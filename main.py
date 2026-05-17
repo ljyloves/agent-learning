@@ -57,10 +57,23 @@ def demo2():
 def demo_react():
     llmClient = HelloAgentsLLM()
     toolExecutor = ToolExecutor()
-    toolExecutor.register_tool(name = "search", description = "使用SerpAPI进行网络搜索", func = search)
+    toolExecutor.register_tool(
+        name = "search", 
+        description = "使用SerpAPI进行网络搜索", 
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "要搜索的关键词"
+                }
+            },
+            "required": ["query"]
+        },
+        func = search)
 
     agent = ReActAgent(llm_client=llmClient, tool_executor=toolExecutor, max_steps=5)
-    question = "中国票房最高的男演员是谁？"
+    question = "截至2026年5月，中国票房最高的男演员是谁？"
     print(f"用户问题: {question}")
     final_answer = agent.run(question)
     print("\n================ 最终答案 ================")
@@ -96,6 +109,6 @@ def demo_reflection():
 if __name__ == '__main__':
     # demo1()
     # demo2()
-    # demo_react()
+    demo_react()
     # demo_plan_and_solve()
-    demo_reflection()
+    # demo_reflection()

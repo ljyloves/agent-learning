@@ -1,7 +1,7 @@
 import os
 from openai import OpenAI
 from dotenv import load_dotenv
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 
 class HelloAgentsLLM:
@@ -23,30 +23,43 @@ class HelloAgentsLLM:
 
         self.client = OpenAI(api_key=apiKey, base_url=baseUrl, timeout=timeout)
 
-    def think(self, messages: List[Dict[str, str]], temperature: float = 0) -> str:
+    def think(self, messages: List[Dict[str, str]], temperature: float = 0, tools_schema: Optional[List[Dict]] = None) -> str:
         """
         调用大语言模型进行思考，并返回其响应。
         """
         print(f"🧠 正在调用 {self.model} 模型...")
+        is_agent_mode = tools_schema is not None and len(tools_schema) > 0
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature,
-                stream=True,
-            )
+            if is_agent_mode:
+                print(f"🔧 以Agent模式调用，提供的工具: {[tool['function']['name'] for tool in tools_schema]}")
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature,
+                    stream=False,
+                    tools=tools_schema
+                )
+                print("✅ [Agent 模式] 大模型已生成完整的决策对象。")
+                return response.choices[0].message
+            else:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature,
+                    stream=True
+                )
             
-            # 处理流式响应
-            print("✅ 大语言模型响应成功:")
-            collected_content = []
-            for chunk in response:
-                if not chunk.choices:
-                    continue
-                content = chunk.choices[0].delta.content or ""
-                print(content, end="", flush=True)
-                collected_content.append(content)
-            print()  # 在流式输出结束后换行
-            return "".join(collected_content)
+                # 处理流式响应
+                print("✅ 大语言模型响应成功:")
+                collected_content = []
+                for chunk in response:
+                    if not chunk.choices:
+                        continue
+                    content = chunk.choices[0].delta.content or ""
+                    print(content, end="", flush=True)
+                    collected_content.append(content)
+                print()  # 在流式输出结束后换行
+                return "".join(collected_content)
 
         except Exception as e:
             print(f"❌ 调用LLM API时发生错误: {e}")
