@@ -68,7 +68,7 @@ FlowGate 的长期定位是企业级 Agent 工作流平台，底座包括 FastAP
 - 前端：Next.js、React、TypeScript
 - 数据服务：PostgreSQL 16、Redis 7、Qdrant
 - 运行方式：Docker Compose
-- 版本控制：本地分支 `flowgate`，远程 `git@github.com:ljyloves/agent-learning.git`
+- 版本控制：本地分支 `flowgate`，跟踪远程 `https://github.com/ljyloves/agent-learning.git` 的 `origin/flowgate`
 - Alembic 当前版本：`20260810_0002 (head)`
 - 自动化测试：最近一次为 `20/20` 通过
 - 2026-08-11 核查状态：Backend、PostgreSQL、Redis、Qdrant 均为 healthy；Frontend running
