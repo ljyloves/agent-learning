@@ -1,0 +1,41 @@
+# Environment
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+*.db
+
+# Node
+node_modules/
+.next/
+out/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+pgdata/
+redisdata/
+
+# Runtime storage
+storage/*
+!storage/paper_agent/
+storage/paper_agent/*
+!storage/paper_agent/.gitkeep
+
+# Local backups and smoke-test artifacts
+*.orig
+test_chat.json
+*.log
