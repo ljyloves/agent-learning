@@ -79,6 +79,12 @@ class PaperJobModel(Base):
     review_result: Mapped[dict[str, Any] | None] = mapped_column(
         JSONB(none_as_null=True)
     )
+    assembly_request: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True)
+    )
+    assembly_result: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True)
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -155,6 +161,10 @@ class QuestionModel(Base):
             "'true_false', 'fill_blank', 'short_answer', 'composite')",
             name="ck_questions_type",
         ),
+        CheckConstraint(
+            "difficulty IN ('easy', 'medium', 'hard')",
+            name="ck_questions_difficulty",
+        ),
         CheckConstraint("position >= 0", name="ck_questions_position"),
     )
 
@@ -173,6 +183,13 @@ class QuestionModel(Base):
         index=True,
     )
     question_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    difficulty: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="medium",
+        server_default=text("'medium'"),
+        index=True,
+    )
     stem: Mapped[str] = mapped_column(Text, nullable=False)
     answer: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))
     explanation: Mapped[str | None] = mapped_column(Text)

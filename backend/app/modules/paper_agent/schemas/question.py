@@ -36,6 +36,12 @@ class QuestionType(str, Enum):
     COMPOSITE = "composite"
 
 
+class QuestionDifficulty(str, Enum):
+    EASY = "easy"
+    MEDIUM = "medium"
+    HARD = "hard"
+
+
 class QuestionImage(QuestionResource):
     """A traceable image referenced by a URL, object key, or local path."""
 
@@ -72,6 +78,7 @@ class Question(BaseModel):
 
     id: NonEmptyText | None = None
     question_type: QuestionType
+    difficulty: QuestionDifficulty = QuestionDifficulty.MEDIUM
     stem: NonEmptyText
     source: QuestionSource
     options: list[QuestionOption] = Field(default_factory=list)

@@ -13,6 +13,31 @@ from app.database import Base
 
 config = context.config
 target_metadata = Base.metadata
+LANGGRAPH_CHECKPOINT_TABLES = frozenset(
+    {
+        "checkpoint_blobs",
+        "checkpoint_migrations",
+        "checkpoint_writes",
+        "checkpoints",
+    }
+)
+
+
+def include_flowgate_object(
+    object_,
+    name: str | None,
+    type_: str,
+    reflected: bool,
+    compare_to,
+) -> bool:
+    """Leave LangGraph's versioned checkpoint tables to its own setup()."""
+
+    if type_ == "table" and name in LANGGRAPH_CHECKPOINT_TABLES:
+        return False
+    table = getattr(object_, "table", None)
+    if table is not None and table.name in LANGGRAPH_CHECKPOINT_TABLES:
+        return False
+    return True
 
 
 def database_url() -> str:
@@ -26,6 +51,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=include_flowgate_object,
     )
 
     with context.begin_transaction():
@@ -37,6 +63,7 @@ def do_run_migrations(connection) -> None:
         connection=connection,
         target_metadata=target_metadata,
         compare_type=True,
+        include_object=include_flowgate_object,
     )
 
     with context.begin_transaction():

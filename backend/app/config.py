@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 from sqlalchemy import URL
 
@@ -37,6 +38,8 @@ class Settings(BaseSettings):
     paper_agent_model: str = "gpt-4o-mini"
     paper_agent_storage_path: Path = Path("/app/storage/paper_agent")
     paper_agent_template_path: Path = Path("/app/templates/paper_agent")
+    paper_agent_checkpoint_pool_min_size: int = Field(default=1, ge=1, le=20)
+    paper_agent_checkpoint_pool_max_size: int = Field(default=5, ge=1, le=50)
 
     # Embedding
     embedding_model: str = "all-MiniLM-L6-v2"
@@ -64,8 +67,30 @@ class Settings(BaseSettings):
         )
 
     @property
+    def checkpointer_database_url(self) -> str:
+        return URL.create(
+            drivername="postgresql",
+            username=self.postgres_user,
+            password=self.postgres_password,
+            host=self.postgres_host,
+            port=self.postgres_port,
+            database=self.postgres_db,
+        ).render_as_string(hide_password=False)
+
+    @property
     def redis_url(self) -> str:
         return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/0"
+
+    @model_validator(mode="after")
+    def validate_checkpoint_pool_size(self) -> "Settings":
+        if (
+            self.paper_agent_checkpoint_pool_max_size
+            < self.paper_agent_checkpoint_pool_min_size
+        ):
+            raise ValueError(
+                "paper_agent checkpoint pool max size must be at least min size"
+            )
+        return self
 
     model_config = {"env_file": "../.env", "extra": "ignore"}
 

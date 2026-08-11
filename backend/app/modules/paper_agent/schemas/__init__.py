@@ -8,6 +8,7 @@ from app.modules.paper_agent.schemas.paper_job import (
 )
 from app.modules.paper_agent.schemas.question import (
     Question,
+    QuestionDifficulty,
     QuestionImage,
     QuestionOption,
     QuestionType,
@@ -37,6 +38,7 @@ __all__ = [
     "PaperJobQuestionCreated",
     "PaperJobStatus",
     "Question",
+    "QuestionDifficulty",
     "QuestionImage",
     "QuestionOption",
     "QuestionResource",

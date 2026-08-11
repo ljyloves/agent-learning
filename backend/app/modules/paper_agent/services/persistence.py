@@ -135,6 +135,7 @@ class QuestionPersistenceContext:
                 parent_question_id=parent_question_id,
                 source_id=question.source.source_id,
                 question_type=question.question_type.value,
+                difficulty=question.difficulty.value,
                 stem=question.stem,
                 answer=question.answer,
                 explanation=question.explanation,
