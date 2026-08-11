@@ -1,3 +1,4 @@
+import asyncio
 from threading import Lock
 
 from sentence_transformers import SentenceTransformer
@@ -18,6 +19,10 @@ def _get_model() -> SentenceTransformer:
 
 
 async def embed(texts: list[str]) -> list[list[float]]:
-    model = _get_model()
-    vectors = model.encode(texts, normalize_embeddings=True)
+    model = await asyncio.to_thread(_get_model)
+    vectors = await asyncio.to_thread(
+        model.encode,
+        texts,
+        normalize_embeddings=True,
+    )
     return vectors.tolist()

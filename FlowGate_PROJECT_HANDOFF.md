@@ -22,7 +22,7 @@ FlowGate 的长期定位是企业级 Agent 工作流平台，底座包括 FastAP
 4. 在约束条件下智能组合试卷，进行质量检查和教师审核。
 5. 输出可编辑 Word 以及打印版 PDF，包含试卷、答案和解析。
 
-当前阶段已完成领域数据、持久化基础设施、M2 轻量图状态、节点契约、可恢复条件分支主工作流、PostgreSQL checkpoint 持久化、首批 100 道“分子与细胞”合成测试题、严格约束的基础组卷算法、可中断恢复的教师审核和统一组卷任务 API；M2 本地假题库全流程验收已通过，尚未进入网络采集、质量评估和文档导出主链路。
+当前阶段已完成领域数据、持久化基础设施、M2 轻量图状态、节点契约、可恢复条件分支主工作流、PostgreSQL checkpoint 持久化、首批 100 道“分子与细胞”合成测试题、严格约束的基础组卷算法、可中断恢复的教师审核、统一组卷任务 API、教师文件上传和首个白名单网站采集；M2 本地假题库全流程验收已通过，尚未进入文件/网页题目解析、质量评估和文档导出主链路。
 
 ## 3. BIO 任务进度
 
@@ -47,6 +47,11 @@ FlowGate 的长期定位是企业级 Agent 工作流平台，底座包括 FastAP
 | BIO-017 | 完成 | 实现基础组卷算法；数量、总分、题型和难度由请求契约、查询条件与响应契约三层严格校验。 |
 | BIO-018 | 完成 | 实现教师审核中断与恢复；支持暂停、通过、驳回，以及换题后再次暂停并继续审核。 |
 | BIO-019 | 完成 | 提供统一组卷任务 API；可创建任务、查看持久化状态并提交教师审核。M2 假题库完整组卷流程验收通过。 |
+| BIO-020 | 完成 | 实现教师文件上传；支持 PDF、DOCX、DOC 及常见图片，并保存文件快照、哈希和来源关系。 |
+| BIO-021 | 完成 | 实现确定性题目解析与切分；可识别题干、选项、答案、解析和小问，并将结果写入结构化题目表。 |
+| BIO-022 | 完成 | 建立题图归档、共享引用和完整性校验；图片原始字节不丢失，题目及资源引用可通过 API 恢复。 |
+| BIO-023 | 完成 | 实现首个 OpenStax 白名单网站适配器；可采集指定 HTTPS 页面并保存 HTML 快照与来源。 |
+| BIO-024 | 完成 | 实现 PostgreSQL 关键词与 Qdrant 向量混合检索；知识点和题型双侧硬过滤，可召回并融合候选题。 |
 
 注意：BIO-005 与 BIO-006 的任务描述在原对话中重复，后续重整任务表时应消除重复编号或明确两者边界。
 
@@ -143,15 +148,66 @@ FlowGate 的长期定位是企业级 Agent 工作流平台，底座包括 FastAP
 - 换题同时更新 checkpoint 所选题目、`paper_job_questions` 关联和持久化试卷 JSON，并再次通过 `PaperAssemblyResult` 校验数量、总分、题型和难度。
 - M2 真实验收任务 `ef1845c3-8813-46dc-83d4-155c6372a589` 全程未访问互联网，仅使用 BIO-016 假题库完成 `create -> get -> approve -> get`；最终为 7 题、26 分、`completed/approved`。
 
+### BIO-020 教师文件上传里程碑
+
+- `POST /api/paper-agent/sources/files` 使用 multipart 上传，支持 PDF、DOCX、DOC、PNG、JPEG、GIF 和 WebP。
+- 文件同时校验扩展名、客户端 MIME 与真实文件签名；DOCX 还校验 ZIP 中的 Word 结构，拒绝伪装格式。
+- 上传使用随机资源 ID 命名，拒绝路径文件名，限制最大字节数，并以临时文件加原子替换写入 `storage/paper_agent/uploads`。
+- 每次上传保存 SHA-256、规范 MIME、原始文件名、`question_sources` 和 `question_resources` 关系；数据库失败时回滚并删除磁盘文件。
+- 真实 HTTP 已分别上传 PDF、Word DOC 和 PNG，均返回 201、来源 ID、资源 ID、哈希和可追溯存储路径；DOCX 由自动化测试覆盖。
+
+### BIO-021 题目解析与切分里程碑
+
+- `POST /api/paper-agent/sources/resources/{resource_id}/questions` 从已上传文档抽取内容、切分题目、通过 Pydantic 校验并在同一事务中持久化。
+- 规则解析器覆盖常见中文题库格式：数字题号、A-H 选项、`答案/参考答案`、`解析/答案解析`、`(1)/(2)` 小问及分行小问答案。
+- DOCX 使用 OOXML 保留段落顺序和内嵌图位置；可提取文本的 PDF 使用 pypdf，旧 DOC 使用受限的 antiword 转文本。
+- 题型根据选项、答案和填空标记确定为单选、多选、判断、填空、简答或复合题；默认难度可由请求指定。
+- 解析失败、数据库失败或恢复校验失败时回滚事务，并删除本次已写入的题图文件。
+
+### BIO-022 题图与资源存储里程碑
+
+- Alembic `20260811_0006` 移除题图资源的一对一限制并增加普通索引，同一物理图片可被多道题或选项共享引用。
+- 内嵌图片按随机资源 ID 写入 `storage/paper_agent/assets/{source_resource_id}`，保存规范 MIME、SHA-256、来源和题目/选项位置关系。
+- `GET /api/paper-agent/questions/{question_id}` 可递归恢复选项、小问和题图；`GET /api/paper-agent/resources/{resource_id}/content` 在路径边界及 SHA-256 校验通过后返回原始文件。
+- 聚焦测试使用同一张 DOCX 内嵌图绑定两道题，验证数据库仅保存一份资源、建立两条引用、原始 PNG 字节可恢复，篡改后读取被拒绝。
+- 真实 HTTP 验收来源 `abe7965a-a4b2-447d-8f49-1a80c9f73fd7`：解析出 2 道主问题、2 个小问；题图资源 `0a0faa9a-b5ff-4417-a125-68b8865f2554` 恢复后 SHA-256 为 `efb2c6c14a06aeae34c08b8609d66dfd61b582e8679c91870bdab10dd65540cd`。
+
+### BIO-023 OpenStax 白名单适配器里程碑
+
+- 首个适配器固定支持 `openstax.org` 与 `www.openstax.org`，配置可进一步收窄白名单。
+- 仅允许 HTTPS、无凭证、默认 443 端口；最多跟随 3 次同白名单重定向，跨域重定向会被拒绝。
+- 仅接收 HTML/XHTML，流式限制响应大小，提取页面标题，并保存原始 HTML 快照、SHA-256、最终 URL 和来源关系。
+- MockTransport 测试覆盖同域重定向、落库、快照、非白名单域名和跨域重定向拒绝。
+- 真实 HTTP 已采集 `https://openstax.org/subjects/science`：来源 ID `65098122-7bb0-43ee-b3b3-f76679c3e925`，HTML 快照 12,410 字节，标题 `OpenStax`。
+
+### BIO-024 关键词与向量混合检索里程碑
+
+- 新增独立 Qdrant 集合 `paper_questions`，与通用 RAG 的 `knowledge_chunks` 隔离；payload 索引覆盖题目 ID、题型、难度和知识点代码。
+- `POST /api/paper-agent/retrieval/questions/index` 从 PostgreSQL 读取题干、选项、答案、解析和知识点描述，生成可重建的题目向量索引；无标签或不存在的指定题目会被拒绝。
+- `POST /api/paper-agent/retrieval/questions/search` 使用中文字符 n-gram/短语关键词分数与向量余弦召回，再通过加权 RRF 融合；默认关键词和向量权重均为 0.5。
+- 知识点与题型同时在 PostgreSQL 和 Qdrant 过滤，向量结果返回 PostgreSQL 二次验证，Qdrant 过期或异常 payload 不会绕过业务过滤。
+- 关键词候选池有上限；向量检索面向完整 Qdrant 过滤集合，不会被 PostgreSQL 按 ID 截断后再做近邻搜索。
+- 内存 Qdrant 聚焦测试索引完整 BIO-016 题库，验证双侧过滤、融合排序、未知标签/无标签索引拒绝，以及向量候选不受关键词池截断。
+- 真实 HTTP 已向 `paper_questions` 索引 101 道带标签题目；查询 `BIO-M1-K02 + single_choice + 细胞膜的选择透过性和磷脂双分子层` 时关键词与向量分支各召回 8 道，融合首位为细胞膜结构题 `ffff37e8-4e75-5548-ad91-28af50db02d7`。
+
+### BIO-025 完全去重、语义去重与采集单元里程碑
+
+- 混合检索默认在融合排序后执行两阶段候选去重：题型、规范化题干及有序选项生成 SHA-256 精确指纹，再以同题型、长度/表面相似度保护条件和 Embedding 余弦相似度识别高度相似题。
+- 搜索请求支持关闭去重或调整语义阈值，默认阈值为 `0.94`；响应返回输入数、精确/语义剔除数、输出数、剩余重复率，以及被剔除题与保留题的审计映射。
+- 检索候选新增 `source_id`，可从结果直接追溯来源；文件或网页解析请求可附加知识点代码，持久化时验证标签并建立题目关系，解析结果可以直接进入 BIO-024 索引流程。
+- OpenStax 快照新增确定性 HTML 题目解析，覆盖题干和 A-H 选项，不调用 LLM；来源保存 `OpenStax` attribution 与 `CC BY-NC-SA` 许可标识。
+- 去重聚焦样本同时含格式完全重复题、语义高度相似题和不同题，精确与语义重复各剔除 1 道，剩余重复率 `0%`，满足低于 `2%` 的验收标准。
+- 真实单元里程碑验收：教师 DOCX 产生 2 道候选题，OpenStax Biology 2e Chapter 2 Review Questions 产生 10 道候选题；共 12 道均保存 `BIO-M1-K02` 标签且来源可追溯，验收数据随后清理。
+
 ## 5. 当前技术基线
 
-- 后端：Python、FastAPI、SQLAlchemy、Alembic、LangGraph、langgraph-checkpoint-postgres、psycopg
+- 后端：Python、FastAPI、SQLAlchemy、Alembic、LangGraph、langgraph-checkpoint-postgres、psycopg、pypdf、antiword
 - 前端：Next.js、React、TypeScript
 - 数据服务：PostgreSQL 16、Redis 7、Qdrant
 - 运行方式：Docker Compose
 - 版本控制：本地分支 `flowgate`，跟踪远程 `https://github.com/ljyloves/agent-learning.git` 的 `origin/flowgate`
-- Alembic 当前版本：`20260811_0005 (head)`
-- 自动化测试：最近一次为 `77/77` 通过
+- Alembic 当前版本：`20260811_0006 (head)`
+- 自动化测试：最近一次为 `91/91` 通过
 - 2026-08-11 核查状态：Backend、PostgreSQL、Redis、Qdrant 均为 healthy；Frontend running
 
 主要实现位置：
@@ -164,12 +220,24 @@ FlowGate 的长期定位是企业级 Agent 工作流平台，底座包括 FastAP
 - `backend/app/modules/paper_agent/nodes/branches.py`
 - `backend/app/modules/paper_agent/nodes/initialize.py`
 - `backend/app/modules/paper_agent/nodes/teacher_review.py`
+- `backend/app/modules/paper_agent/adapters/openstax.py`
 - `backend/app/modules/paper_agent/schemas/checkpoint.py`
 - `backend/app/modules/paper_agent/schemas/assembly.py`
 - `backend/app/modules/paper_agent/schemas/task.py`
+- `backend/app/modules/paper_agent/schemas/ingestion.py`
 - `backend/app/modules/paper_agent/services/checkpoint.py`
 - `backend/app/modules/paper_agent/services/assembly.py`
 - `backend/app/modules/paper_agent/services/task.py`
+- `backend/app/modules/paper_agent/services/file_ingestion.py`
+- `backend/app/modules/paper_agent/services/web_ingestion.py`
+- `backend/app/modules/paper_agent/services/document_extraction.py`
+- `backend/app/modules/paper_agent/services/question_parser.py`
+- `backend/app/modules/paper_agent/services/question_ingestion.py`
+- `backend/app/modules/paper_agent/services/resource_storage.py`
+- `backend/app/modules/paper_agent/services/retrieval.py`
+- `backend/app/modules/paper_agent/services/deduplication.py`
+- `backend/app/modules/paper_agent/services/webpage_question_parser.py`
+- `backend/app/modules/paper_agent/schemas/retrieval.py`
 - `backend/app/models/paper_agent.py`
 - `backend/app/models/taxonomy.py`
 - `backend/alembic/versions/20260810_0001_create_initial_schema.py`
@@ -177,6 +245,7 @@ FlowGate 的长期定位是企业级 Agent 工作流平台，底座包括 FastAP
 - `backend/alembic/versions/20260811_0003_seed_molecular_cell_question_bank.py`
 - `backend/alembic/versions/20260811_0004_add_question_difficulty.py`
 - `backend/alembic/versions/20260811_0005_add_paper_job_assembly_payloads.py`
+- `backend/alembic/versions/20260811_0006_allow_shared_question_resources.py`
 - `backend/tests/modules/paper_agent/`
 - `backend/tests/modules/paper_agent/test_mock_question_bank.py`
 - `backend/tests/modules/paper_agent/test_assembly_schema.py`
@@ -187,6 +256,12 @@ FlowGate 的长期定位是企业级 Agent 工作流平台，底座包括 FastAP
 - `backend/tests/modules/paper_agent/test_teacher_review_checkpoint.py`
 - `backend/tests/modules/paper_agent/test_task_schema.py`
 - `backend/tests/modules/paper_agent/test_paper_task.py`
+- `backend/tests/modules/paper_agent/test_teacher_file_upload.py`
+- `backend/tests/modules/paper_agent/test_openstax_adapter.py`
+- `backend/tests/modules/paper_agent/test_question_parser.py`
+- `backend/tests/modules/paper_agent/test_question_resource_ingestion.py`
+- `backend/tests/modules/paper_agent/test_hybrid_retrieval.py`
+- `backend/tests/modules/paper_agent/test_question_deduplication.py`
 - `backend/tests/models/test_metadata.py`
 
 现有 Paper Agent 接口：
@@ -205,6 +280,13 @@ FlowGate 的长期定位是企业级 Agent 工作流平台，底座包括 FastAP
 - `POST /api/paper-agent/tasks`
 - `GET /api/paper-agent/tasks/{job_id}`
 - `POST /api/paper-agent/tasks/{job_id}/review`
+- `POST /api/paper-agent/sources/files`
+- `POST /api/paper-agent/sources/webpages`
+- `POST /api/paper-agent/sources/resources/{resource_id}/questions`
+- `GET /api/paper-agent/questions/{question_id}`
+- `GET /api/paper-agent/resources/{resource_id}/content`
+- `POST /api/paper-agent/retrieval/questions/index`
+- `POST /api/paper-agent/retrieval/questions/search`
 
 ## 6. 恢复与验证命令
 
@@ -229,12 +311,18 @@ curl -fsS -X POST http://localhost:8000/api/paper-agent/graph/smoke
 
 1. FlowGate 使用公开仓库 `ljyloves/agent-learning` 的独立 `flowgate` 分支；远程 `main` 属于另一套 Agent 学习代码，未经明确计划不要合并或覆盖。
 2. `.gitignore` 已排除 `.env`、`*.orig`、`__pycache__`、虚拟环境、前端构建产物和运行时数据；每次提交前仍需执行密钥检查。
-3. `project-progress-plan.md` 仍以通用企业 Agent 路线为主，尚未完整反映 BIO-001 至 BIO-019 的实际进度，本文件暂时作为 BIO MVP 的事实来源。
+3. `project-progress-plan.md` 仍以通用企业 Agent 路线为主，尚未完整反映已完成至 BIO-025 的实际进度，本文件暂时作为 BIO MVP 的事实来源。
 4. 后续 BIO 任务尚未由用户正式定义。继续编码前，应先确定下一任务及验收标准，不要根据旧对话擅自假设编号。
-5. M2 已具备离线假题库完整闭环；逻辑上的下一阶段应围绕“题目导入/采集 -> 去重与质量评估 -> 扩展组卷约束 -> Word/PDF 导出”拆分，但以用户确认后的任务表为准。
+5. M2 已具备离线假题库完整闭环，M3 首个采集单元已完成文件/网页采集、题目抽取、标签、候选检索与去重；逻辑上的下一阶段应围绕质量评估、扩展组卷约束和 Word/PDF 导出拆分，但以用户确认后的任务表为准。
 6. Checkpoint 当前尚未配置 TTL、归档或定期清理策略；在进入长期运行或多租户阶段前需要定义保留周期和清理责任。
-7. Question 已支持难度筛选，但仍无年级、教材版本、来源质量等检索字段；基础算法尚未支持知识点配额、跨题型动态分值和相似题去重。
+7. Question 已支持难度筛选和候选去重，但仍无年级、教材版本、来源质量等检索字段；基础算法尚未支持知识点配额和跨题型动态分值。
 8. BIO-019 已同步 checkpoint 与 `paper_jobs` 审核状态，但两套存储仍是应用层双写，不属于单一数据库事务；进入多实例生产环境前应增加幂等操作、失败补偿和状态对账任务。
+9. BIO-021 已完成 DOCX、可提取文本 PDF 和旧 DOC 的确定性结构解析；扫描 PDF、图片 OCR、复杂多栏 PDF 和数学公式版式仍需专门 OCR/版面分析能力。PDF 图片当前只能按页面顺序附着并返回明确 warning，不能宣称已恢复精确语义坐标。
+10. BIO-023 当前只有 OpenStax 适配器；BIO-025 仅用确定性 HTML 解析内容。OpenStax 页面要求 attribution/CC BY-NC-SA，并限制未经许可将内容输入 LLM 或生成式 AI；在启用 LLM 抽取、改写或生成前必须完成单独授权审查。持续采集仍需定义 robots 检查、请求频率、缓存和失败重试策略。
+11. 当前 Docker Desktop 安装缺少 Windows `buildx`，WSL/Windows legacy builder 持续挂起；文档依赖已拆到独立 `requirements-documents.txt` 缓存层，运行容器也已安装 pypdf/Pillow、antiword 并健康通过验收，但干净镜像重建仍需修复 Docker Desktop builder 后复验。
+12. BIO-024 的 Qdrant 题目索引是 PostgreSQL 的可重建派生数据，目前通过显式索引 API 同步；新增、修改或删除题目后需要触发增量/全量重建，后续应接入事务外盒或异步索引任务并监控索引滞后。
+13. 混合检索默认权重和 RRF 常数已通过功能测试但尚未用教师标注集做 Recall@K、MRR、nDCG 评估；Embedding 模型或维度变更时必须创建新集合并重建索引，不能直接复用旧向量。
+14. BIO-025 的 `0.94` 语义阈值通过确定性功能样本验证，尚未用真实教师重复标注集校准误杀率和漏检率；上线前应报告 Precision、Recall、F1，并按题型或语言分层调参。
 
 ## 8. 推荐的跨账号持续方案
 

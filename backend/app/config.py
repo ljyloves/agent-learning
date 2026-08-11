@@ -40,6 +40,20 @@ class Settings(BaseSettings):
     paper_agent_template_path: Path = Path("/app/templates/paper_agent")
     paper_agent_checkpoint_pool_min_size: int = Field(default=1, ge=1, le=20)
     paper_agent_checkpoint_pool_max_size: int = Field(default=5, ge=1, le=50)
+    paper_agent_upload_max_bytes: int = Field(
+        default=20 * 1024 * 1024,
+        ge=1024,
+        le=100 * 1024 * 1024,
+    )
+    paper_agent_webpage_max_bytes: int = Field(
+        default=5 * 1024 * 1024,
+        ge=1024,
+        le=20 * 1024 * 1024,
+    )
+    paper_agent_web_timeout_seconds: float = Field(default=15.0, ge=1.0, le=60.0)
+    paper_agent_allowed_website_hosts: str = "openstax.org,www.openstax.org"
+    paper_agent_question_collection: str = "paper_questions"
+    paper_agent_retrieval_pool_size: int = Field(default=500, ge=10, le=5000)
 
     # Embedding
     embedding_model: str = "all-MiniLM-L6-v2"
@@ -81,6 +95,14 @@ class Settings(BaseSettings):
     def redis_url(self) -> str:
         return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/0"
 
+    @property
+    def paper_agent_allowed_hosts(self) -> frozenset[str]:
+        return frozenset(
+            host.strip().lower()
+            for host in self.paper_agent_allowed_website_hosts.split(",")
+            if host.strip()
+        )
+
     @model_validator(mode="after")
     def validate_checkpoint_pool_size(self) -> "Settings":
         if (
@@ -90,6 +112,13 @@ class Settings(BaseSettings):
             raise ValueError(
                 "paper_agent checkpoint pool max size must be at least min size"
             )
+        if not self.paper_agent_allowed_hosts:
+            raise ValueError("paper_agent website host whitelist cannot be empty")
+        if any(
+            "/" in host or ":" in host or "@" in host
+            for host in self.paper_agent_allowed_hosts
+        ):
+            raise ValueError("paper_agent website whitelist must contain hostnames")
         return self
 
     model_config = {"env_file": "../.env", "extra": "ignore"}

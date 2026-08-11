@@ -264,7 +264,7 @@ class QuestionImageModel(Base):
     resource_id: Mapped[str] = mapped_column(
         ForeignKey("question_resources.resource_id", ondelete="CASCADE"),
         nullable=False,
-        unique=True,
+        index=True,
     )
     question_id: Mapped[str | None] = mapped_column(
         ForeignKey("questions.id", ondelete="CASCADE"),

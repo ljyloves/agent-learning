@@ -1,10 +1,27 @@
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Path,
+    Request,
+    UploadFile,
+    status,
+)
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi.responses import FileResponse
 
 from app.database import get_db
+from app.config import settings
+from app.modules.paper_agent.adapters import (
+    WebsiteContentError,
+    WebsiteFetchError,
+    WebsiteNotAllowedError,
+    WebsiteTooLargeError,
+)
 from app.modules.paper_agent.graph import PaperGraphState, paper_agent_graph
 from app.modules.paper_agent.schemas.assembly import (
     PaperAssemblyRequest,
@@ -19,6 +36,21 @@ from app.modules.paper_agent.schemas.checkpoint import (
     TeacherReviewTaskStart,
 )
 from app.modules.paper_agent.schemas.paper_job import PaperJobStatus
+from app.modules.paper_agent.schemas.ingestion import (
+    IngestedResourceResponse,
+    WebPageCollectRequest,
+)
+from app.modules.paper_agent.schemas.parsing import (
+    ParsedQuestionsResponse,
+    QuestionParseRequest,
+)
+from app.modules.paper_agent.schemas.question import Question
+from app.modules.paper_agent.schemas.retrieval import (
+    HybridQuestionSearchRequest,
+    HybridQuestionSearchResponse,
+    QuestionIndexRequest,
+    QuestionIndexResponse,
+)
 from app.modules.paper_agent.schemas.taxonomy import (
     BiologyTaxonomyResponse,
     PaperJobQuestionCreate,
@@ -53,6 +85,12 @@ from app.modules.paper_agent.services.assembly import (
     assemble_paper,
 )
 from app.modules.paper_agent.services.taxonomy import get_biology_taxonomy
+from app.modules.paper_agent.services.file_ingestion import (
+    EmptyUploadError,
+    UnsupportedUploadError,
+    UploadTooLargeError,
+    save_teacher_upload,
+)
 from app.modules.paper_agent.services.task import (
     PaperTaskNotFoundError,
     PaperTaskNotReviewableError,
@@ -61,10 +99,37 @@ from app.modules.paper_agent.services.task import (
     get_paper_task,
     review_paper_task,
 )
+from app.modules.paper_agent.services.web_ingestion import collect_openstax_webpage
+from app.modules.paper_agent.services.document_extraction import DocumentExtractionError
+from app.modules.paper_agent.services.question_ingestion import parse_uploaded_questions
+from app.modules.paper_agent.services.question_parser import QuestionParseError
+from app.modules.paper_agent.services.resource_storage import (
+    QuestionNotFoundError,
+    StoredResourceIntegrityError,
+    StoredResourceNotFoundError,
+    UnsafeStoredResourceError,
+    get_stored_resource_file,
+    recover_question,
+)
+from app.modules.paper_agent.services.retrieval import (
+    QuestionIndexSelectionError,
+    QuestionVectorStoreError,
+    RetrievalFilterError,
+    hybrid_search_questions,
+    index_questions,
+)
 
 
 router = APIRouter(prefix="/paper-agent", tags=["paper-agent"])
 ThreadId = Annotated[
+    str,
+    Path(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+    ),
+]
+ResourceId = Annotated[
     str,
     Path(
         min_length=1,
@@ -180,6 +245,224 @@ async def assemble_basic_paper(
                 "required": exc.required,
                 "available": exc.available,
             },
+        ) from exc
+
+
+@router.post(
+    "/sources/files",
+    response_model=IngestedResourceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_teacher_file(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+) -> IngestedResourceResponse:
+    try:
+        return await save_teacher_upload(
+            db,
+            file,
+            storage_root=settings.paper_agent_storage_path,
+            max_bytes=settings.paper_agent_upload_max_bytes,
+        )
+    except EmptyUploadError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        ) from exc
+    except UploadTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=str(exc),
+        ) from exc
+    except UnsupportedUploadError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=str(exc),
+        ) from exc
+    finally:
+        await file.close()
+
+
+@router.post(
+    "/sources/webpages",
+    response_model=IngestedResourceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def collect_whitelisted_webpage(
+    payload: WebPageCollectRequest,
+    db: AsyncSession = Depends(get_db),
+) -> IngestedResourceResponse:
+    try:
+        return await collect_openstax_webpage(
+            db,
+            payload,
+            storage_root=settings.paper_agent_storage_path,
+            allowed_hosts=settings.paper_agent_allowed_hosts,
+            max_bytes=settings.paper_agent_webpage_max_bytes,
+            timeout_seconds=settings.paper_agent_web_timeout_seconds,
+        )
+    except WebsiteNotAllowedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    except WebsiteTooLargeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=str(exc),
+        ) from exc
+    except WebsiteContentError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=str(exc),
+        ) from exc
+    except WebsiteFetchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/sources/resources/{resource_id}/questions",
+    response_model=ParsedQuestionsResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def parse_teacher_questions(
+    resource_id: ResourceId,
+    payload: QuestionParseRequest,
+    db: AsyncSession = Depends(get_db),
+) -> ParsedQuestionsResponse:
+    try:
+        return await parse_uploaded_questions(
+            db,
+            resource_id,
+            payload,
+            storage_root=settings.paper_agent_storage_path,
+            max_asset_bytes=settings.paper_agent_upload_max_bytes,
+        )
+    except StoredResourceNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except (
+        DocumentExtractionError,
+        QuestionParseError,
+        UnknownTaxonomyCodeError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    except (StoredResourceIntegrityError, UnsafeStoredResourceError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except (PersistenceConflictError, IntegrityError) as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="parsed question or resource conflicts with stored data",
+        ) from exc
+
+
+@router.get(
+    "/questions/{question_id}",
+    response_model=Question,
+)
+async def read_parsed_question(
+    question_id: ResourceId,
+    db: AsyncSession = Depends(get_db),
+) -> Question:
+    try:
+        return await recover_question(db, question_id)
+    except QuestionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except StoredResourceIntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+
+@router.get("/resources/{resource_id}/content", response_class=FileResponse)
+async def read_stored_resource_content(
+    resource_id: ResourceId,
+    db: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    try:
+        stored = await get_stored_resource_file(
+            db,
+            resource_id,
+            storage_root=settings.paper_agent_storage_path,
+        )
+    except StoredResourceNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except (StoredResourceIntegrityError, UnsafeStoredResourceError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    return FileResponse(
+        path=stored.path,
+        media_type=stored.resource.mime_type,
+        filename=(
+            stored.path.name
+            if stored.resource.resource_type == "image"
+            else stored.source.external_id or stored.path.name
+        ),
+    )
+
+
+@router.post(
+    "/retrieval/questions/index",
+    response_model=QuestionIndexResponse,
+)
+async def index_retrievable_questions(
+    payload: QuestionIndexRequest,
+    db: AsyncSession = Depends(get_db),
+) -> QuestionIndexResponse:
+    try:
+        return await index_questions(db, payload)
+    except QuestionIndexSelectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    except QuestionVectorStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/retrieval/questions/search",
+    response_model=HybridQuestionSearchResponse,
+)
+async def search_retrievable_questions(
+    payload: HybridQuestionSearchRequest,
+    db: AsyncSession = Depends(get_db),
+) -> HybridQuestionSearchResponse:
+    try:
+        return await hybrid_search_questions(db, payload)
+    except RetrievalFilterError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    except QuestionVectorStoreError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
         ) from exc
 
 

@@ -45,7 +45,7 @@ class QuestionPersistenceContext:
     def __init__(self, session: AsyncSession):
         self.session = session
         self.source_ids: set[str] = set()
-        self.resource_ids: set[str] = set()
+        self.image_bindings: set[tuple[str, str | None, str | None]] = set()
         self.question_ids: set[str] = set()
 
     async def ensure_source(self, source: QuestionSource) -> None:
@@ -78,26 +78,34 @@ class QuestionPersistenceContext:
         position: int,
     ) -> None:
         await self.ensure_source(image.source)
-        if image.resource_id in self.resource_ids:
+        binding = (image.resource_id, question_id, option_id)
+        if binding in self.image_bindings:
             raise PersistenceConflictError(
-                f"duplicate resource_id in request: {image.resource_id}"
+                f"duplicate image binding in request: {image.resource_id}"
             )
-        if await self.session.get(QuestionResourceModel, image.resource_id):
+        resource = await self.session.get(QuestionResourceModel, image.resource_id)
+        if resource is None:
+            self.session.add(
+                QuestionResourceModel(
+                    resource_id=image.resource_id,
+                    resource_type=image.resource_type.value,
+                    uri=image.uri,
+                    source_id=image.source.source_id,
+                    mime_type=image.mime_type,
+                    sha256=image.sha256,
+                )
+            )
+            await self.session.flush()
+        elif (
+            resource.resource_type != image.resource_type.value
+            or resource.uri != image.uri
+            or resource.source_id != image.source.source_id
+            or resource.mime_type != image.mime_type
+            or resource.sha256 != image.sha256
+        ):
             raise PersistenceConflictError(
-                f"resource already exists: {image.resource_id}"
+                f"resource metadata conflict: {image.resource_id}"
             )
-
-        self.session.add(
-            QuestionResourceModel(
-                resource_id=image.resource_id,
-                resource_type=image.resource_type.value,
-                uri=image.uri,
-                source_id=image.source.source_id,
-                mime_type=image.mime_type,
-                sha256=image.sha256,
-            )
-        )
-        await self.session.flush()
         self.session.add(
             QuestionImageModel(
                 id=new_id(),
@@ -109,7 +117,7 @@ class QuestionPersistenceContext:
                 position=position,
             )
         )
-        self.resource_ids.add(image.resource_id)
+        self.image_bindings.add(binding)
 
     async def save_question(
         self,
