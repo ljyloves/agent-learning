@@ -7,6 +7,7 @@ import hashlib
 import posixpath
 import subprocess
 import zipfile
+from collections import defaultdict
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path, PurePosixPath
@@ -33,6 +34,13 @@ class ExtractedDocument:
     text: str
     assets: list[ExtractedAsset] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class _PdfAssetCandidate:
+    key: str
+    digest: str
+    asset: ExtractedAsset
 
 
 WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -123,16 +131,100 @@ def _extract_pdf(data: bytes) -> ExtractedDocument:
         reader = PdfReader(BytesIO(data), strict=False)
     except Exception as exc:
         raise DocumentExtractionError("PDF cannot be read") from exc
+    pages = list(reader.pages)
     paragraphs: list[str] = []
     assets: list[ExtractedAsset] = []
     warnings: list[str] = []
-    seen_digests: set[str] = set()
-    for page_number, page in enumerate(reader.pages, start=1):
+    candidates_by_page: list[dict[str, _PdfAssetCandidate]] = []
+    digest_pages: dict[str, set[int]] = defaultdict(set)
+
+    for page_number, page in enumerate(pages, start=1):
+        page_candidates: dict[str, _PdfAssetCandidate] = {}
+        try:
+            page_images = list(page.images)
+        except Exception:
+            page_images = []
+            warnings.append(f"page {page_number}: embedded images could not be decoded")
+        for index, image in enumerate(page_images):
+            image_data = image.data
+            digest = hashlib.sha256(image_data).hexdigest()
+            original_name = image.name or f"page-{page_number}-image-{index}.png"
+            key = Path(original_name).stem.lstrip("/")
+            suffix = Path(original_name).suffix.lower()
+            if suffix not in IMAGE_SUFFIXES:
+                suffix = ".png"
+                original_name = f"{original_name}.png"
+            candidate = _PdfAssetCandidate(
+                key=key,
+                digest=digest,
+                asset=ExtractedAsset(
+                    marker=f"pdf-{page_number}-{index}",
+                    original_name=original_name,
+                    suffix=suffix,
+                    mime_type=(
+                        mimetypes.guess_type(original_name)[0] or "image/png"
+                    ),
+                    data=image_data,
+                ),
+            )
+            page_candidates.setdefault(key, candidate)
+            digest_pages[digest].add(page_number)
+        candidates_by_page.append(page_candidates)
+
+    marker_by_digest: dict[str, str] = {}
+    ignored_boilerplate = False
+    boilerplate_text = {
+        "学科网（北京）股份有限公司",
+        "学科网(北京)股份有限公司",
+    }
+    for page_number, (page, page_candidates) in enumerate(
+        zip(pages, candidates_by_page, strict=True),
+        start=1,
+    ):
         try:
             contents = page.get_contents()
             if contents is not None and len(contents.get_data()) > 50 * 1024 * 1024:
                 raise DocumentExtractionError("PDF page content stream is too large")
-            text = page.extract_text(extraction_mode="layout") or ""
+            stream_parts: list[str] = []
+            page_top = float(page.mediabox.top)
+
+            def visitor_operand_before(operator, operands, cm, tm):
+                nonlocal ignored_boilerplate
+                if operator != b"Do" or not operands:
+                    return
+                key = str(operands[0]).lstrip("/")
+                candidate = page_candidates.get(key)
+                if candidate is None:
+                    return
+                y_position = float(cm[5])
+                is_repeated_edge_image = (
+                    len(digest_pages[candidate.digest]) >= 3
+                    and (
+                        y_position >= page_top * 0.9
+                        or y_position <= page_top * 0.05
+                    )
+                )
+                if is_repeated_edge_image:
+                    ignored_boilerplate = True
+                    return
+                marker = marker_by_digest.get(candidate.digest)
+                if marker is None:
+                    marker = candidate.asset.marker
+                    marker_by_digest[candidate.digest] = marker
+                    assets.append(candidate.asset)
+                stream_parts.append(f"\n[[image:{marker}]]\n")
+
+            def visitor_text(text, cm, tm, font_dict, font_size):
+                compact = "".join(text.split())
+                if compact in boilerplate_text:
+                    return
+                stream_parts.append(text)
+
+            page.extract_text(
+                visitor_operand_before=visitor_operand_before,
+                visitor_text=visitor_text,
+            )
+            text = "".join(stream_parts)
         except DocumentExtractionError:
             raise
         except Exception as exc:
@@ -141,35 +233,12 @@ def _extract_pdf(data: bytes) -> ExtractedDocument:
             ) from exc
         if text.strip():
             paragraphs.append(text.strip())
-        try:
-            page_images = list(page.images)
-        except Exception:
-            page_images = []
-            warnings.append(f"page {page_number}: embedded images could not be decoded")
-        for index, image in enumerate(page_images):
-            image_data = image.data
-            digest_key = hashlib.sha256(image_data).hexdigest()
-            if digest_key in seen_digests:
-                continue
-            seen_digests.add(digest_key)
-            original_name = image.name or f"page-{page_number}-image-{index}.png"
-            suffix = Path(original_name).suffix.lower()
-            if suffix not in IMAGE_SUFFIXES:
-                suffix = ".png"
-                original_name = f"{original_name}.png"
-            marker = f"pdf-{page_number}-{index}"
-            assets.append(
-                ExtractedAsset(
-                    marker=marker,
-                    original_name=original_name,
-                    suffix=suffix,
-                    mime_type=mimetypes.guess_type(original_name)[0] or "image/png",
-                    data=image_data,
-                )
-            )
-            paragraphs.append(f"[[image:{marker}]]")
+    if ignored_boilerplate:
+        warnings.append("repeated PDF edge images were treated as page boilerplate and ignored")
     if assets:
-        warnings.append("PDF image coordinates are not semantic; extracted images are attached by page order")
+        warnings.append(
+            "PDF images were placed using content-stream order; complex layouts require review"
+        )
     return ExtractedDocument(text="\n".join(paragraphs), assets=assets, warnings=warnings)
 
 

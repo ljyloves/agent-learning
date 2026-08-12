@@ -27,6 +27,26 @@ from app.modules.paper_agent.schemas.assembly import (
     PaperAssemblyRequest,
     PaperAssemblyResult,
 )
+from app.modules.paper_agent.schemas.annotation import (
+    TaxonomyAnnotationRequest,
+    TaxonomyAnnotationResponse,
+)
+from app.modules.paper_agent.schemas.analysis import (
+    DifficultyEstimationResponse,
+    QualityReviewResponse,
+)
+from app.modules.paper_agent.schemas.optimization import (
+    OptimizedPaperRequest,
+    OptimizedPaperResult,
+)
+from app.modules.paper_agent.schemas.optimized_task import (
+    OptimizedPaperLockUpdate,
+    OptimizedPaperReassemble,
+    OptimizedPaperReplace,
+    OptimizedPaperTaskCreate,
+    OptimizedPaperTaskResponse,
+    OptimizedPaperTaskReview,
+)
 from app.modules.paper_agent.schemas.checkpoint import (
     PaperGraphTaskResponse,
     PaperGraphTaskResume,
@@ -84,7 +104,45 @@ from app.modules.paper_agent.services.assembly import (
     InsufficientQuestionBankError,
     assemble_paper,
 )
+from app.modules.paper_agent.services.optimization import (
+    NoFeasiblePaperError,
+    OptimizationDataError,
+    OptimizationEmbeddingError,
+    OptimizationFilterError,
+    RequiredQuestionUnavailableError,
+    optimize_paper,
+)
+from app.modules.paper_agent.services.optimized_task import (
+    LockedQuestionError,
+    OptimizedTaskNotFoundError,
+    OptimizedTaskNotReviewableError,
+    OptimizedTaskSelectionError,
+    create_optimized_task,
+    get_optimized_task,
+    reassemble_optimized_task,
+    replace_optimized_question,
+    review_optimized_task,
+    update_optimized_task_locks,
+)
 from app.modules.paper_agent.services.taxonomy import get_biology_taxonomy
+from app.modules.paper_agent.services.taxonomy_annotation import (
+    TaxonomyAnnotationConfigurationError,
+    TaxonomyAnnotationConflictError,
+    TaxonomyAnnotationOutputError,
+    TaxonomyAnnotationPolicyError,
+    TaxonomyAnnotationProviderError,
+    annotate_question_taxonomy,
+)
+from app.modules.paper_agent.services.question_analysis import (
+    QuestionAnalysisConfigurationError,
+    QuestionAnalysisConflictError,
+    QuestionAnalysisOutputError,
+    QuestionAnalysisPolicyError,
+    QuestionAnalysisPrerequisiteError,
+    QuestionAnalysisProviderError,
+    estimate_question_difficulty,
+    review_question_quality,
+)
 from app.modules.paper_agent.services.file_ingestion import (
     EmptyUploadError,
     UnsupportedUploadError,
@@ -172,6 +230,46 @@ def teacher_review_response(
     )
 
 
+def optimized_task_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, OptimizedTaskNotFoundError):
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="optimized paper task was not found",
+        )
+    if isinstance(
+        exc,
+        (
+            LockedQuestionError,
+            OptimizedTaskNotReviewableError,
+            OptimizationDataError,
+            TeacherReviewNotFoundError,
+            TeacherReviewNotPendingError,
+        ),
+    ):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        )
+    if isinstance(exc, OptimizationEmbeddingError):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        )
+    if isinstance(exc, NoFeasiblePaperError):
+        return HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "NO_FEASIBLE_PAPER",
+                "candidate_count": exc.candidate_count,
+                "quota_availability": exc.quota_availability,
+            },
+        )
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=str(exc),
+    )
+
+
 @router.get("/health")
 async def paper_agent_health(request: Request):
     checkpointer_ready = hasattr(request.app.state, "paper_agent_checkpointer")
@@ -245,6 +343,42 @@ async def assemble_basic_paper(
                 "required": exc.required,
                 "available": exc.available,
             },
+        ) from exc
+
+
+@router.post(
+    "/papers/optimize",
+    response_model=OptimizedPaperResult,
+)
+async def optimize_constrained_paper(
+    payload: OptimizedPaperRequest,
+    db: AsyncSession = Depends(get_db),
+) -> OptimizedPaperResult:
+    try:
+        return await optimize_paper(db, payload)
+    except OptimizationFilterError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    except NoFeasiblePaperError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "NO_FEASIBLE_PAPER",
+                "candidate_count": exc.candidate_count,
+                "quota_availability": exc.quota_availability,
+            },
+        ) from exc
+    except OptimizationDataError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except OptimizationEmbeddingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
         ) from exc
 
 
@@ -387,6 +521,151 @@ async def read_parsed_question(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(exc),
+        ) from exc
+
+
+@router.post(
+    "/questions/{question_id}/taxonomy-annotation",
+    response_model=TaxonomyAnnotationResponse,
+)
+async def annotate_question_with_taxonomy(
+    question_id: ResourceId,
+    payload: TaxonomyAnnotationRequest,
+    db: AsyncSession = Depends(get_db),
+) -> TaxonomyAnnotationResponse:
+    try:
+        return await annotate_question_taxonomy(db, question_id, payload)
+    except QuestionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except TaxonomyAnnotationConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except TaxonomyAnnotationPolicyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except TaxonomyAnnotationConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except (
+        TaxonomyAnnotationOutputError,
+        TaxonomyAnnotationProviderError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="taxonomy annotation conflicts with stored data",
+        ) from exc
+
+
+@router.post(
+    "/questions/{question_id}/difficulty-estimation",
+    response_model=DifficultyEstimationResponse,
+)
+async def estimate_difficulty(
+    question_id: ResourceId,
+    db: AsyncSession = Depends(get_db),
+) -> DifficultyEstimationResponse:
+    try:
+        return await estimate_question_difficulty(db, question_id)
+    except QuestionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except QuestionAnalysisPolicyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except (
+        QuestionAnalysisPrerequisiteError,
+        QuestionAnalysisConflictError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except QuestionAnalysisConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except (
+        QuestionAnalysisOutputError,
+        QuestionAnalysisProviderError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="difficulty analysis conflicts with stored data",
+        ) from exc
+
+
+@router.post(
+    "/questions/{question_id}/quality-review",
+    response_model=QualityReviewResponse,
+)
+async def review_quality(
+    question_id: ResourceId,
+    db: AsyncSession = Depends(get_db),
+) -> QualityReviewResponse:
+    try:
+        return await review_question_quality(db, question_id)
+    except QuestionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except QuestionAnalysisPolicyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        ) from exc
+    except (
+        QuestionAnalysisPrerequisiteError,
+        QuestionAnalysisConflictError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except QuestionAnalysisConfigurationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except (
+        QuestionAnalysisOutputError,
+        QuestionAnalysisProviderError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="quality review conflicts with stored data",
         ) from exc
 
 
@@ -668,3 +947,162 @@ async def review_assembly_task(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(exc),
         ) from exc
+
+
+@router.post(
+    "/optimized-tasks",
+    response_model=OptimizedPaperTaskResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_persisted_optimized_task(
+    payload: OptimizedPaperTaskCreate,
+    db: AsyncSession = Depends(get_db),
+    review_graph: Any = Depends(get_teacher_review_graph),
+) -> OptimizedPaperTaskResponse:
+    try:
+        return await create_optimized_task(db, review_graph, payload)
+    except (
+        NoFeasiblePaperError,
+        OptimizationDataError,
+        OptimizationEmbeddingError,
+        OptimizationFilterError,
+        OptimizedTaskSelectionError,
+        RequiredQuestionUnavailableError,
+    ) as exc:
+        await db.rollback()
+        raise optimized_task_http_error(exc) from exc
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="optimized paper task conflicts with persisted data",
+        ) from exc
+
+
+@router.get(
+    "/optimized-tasks/{job_id}",
+    response_model=OptimizedPaperTaskResponse,
+)
+async def read_persisted_optimized_task(
+    job_id: ThreadId,
+    db: AsyncSession = Depends(get_db),
+) -> OptimizedPaperTaskResponse:
+    try:
+        return await get_optimized_task(db, job_id)
+    except OptimizedTaskNotFoundError as exc:
+        raise optimized_task_http_error(exc) from exc
+
+
+@router.put(
+    "/optimized-tasks/{job_id}/locks",
+    response_model=OptimizedPaperTaskResponse,
+)
+async def update_persisted_optimized_task_locks(
+    job_id: ThreadId,
+    payload: OptimizedPaperLockUpdate,
+    db: AsyncSession = Depends(get_db),
+) -> OptimizedPaperTaskResponse:
+    try:
+        return await update_optimized_task_locks(db, job_id, payload)
+    except (
+        OptimizedTaskNotFoundError,
+        OptimizedTaskNotReviewableError,
+        OptimizedTaskSelectionError,
+    ) as exc:
+        await db.rollback()
+        raise optimized_task_http_error(exc) from exc
+
+
+@router.post(
+    "/optimized-tasks/{job_id}/replace",
+    response_model=OptimizedPaperTaskResponse,
+)
+async def replace_persisted_optimized_question(
+    job_id: ThreadId,
+    payload: OptimizedPaperReplace,
+    db: AsyncSession = Depends(get_db),
+    review_graph: Any = Depends(get_teacher_review_graph),
+) -> OptimizedPaperTaskResponse:
+    try:
+        return await replace_optimized_question(
+            db,
+            review_graph,
+            job_id,
+            payload,
+        )
+    except (
+        LockedQuestionError,
+        NoFeasiblePaperError,
+        OptimizationDataError,
+        OptimizationEmbeddingError,
+        OptimizationFilterError,
+        OptimizedTaskNotFoundError,
+        OptimizedTaskNotReviewableError,
+        OptimizedTaskSelectionError,
+        RequiredQuestionUnavailableError,
+        TeacherReviewNotFoundError,
+        TeacherReviewNotPendingError,
+    ) as exc:
+        await db.rollback()
+        raise optimized_task_http_error(exc) from exc
+
+
+@router.post(
+    "/optimized-tasks/{job_id}/reassemble",
+    response_model=OptimizedPaperTaskResponse,
+)
+async def reassemble_persisted_optimized_task(
+    job_id: ThreadId,
+    payload: OptimizedPaperReassemble,
+    db: AsyncSession = Depends(get_db),
+    review_graph: Any = Depends(get_teacher_review_graph),
+) -> OptimizedPaperTaskResponse:
+    try:
+        return await reassemble_optimized_task(
+            db,
+            review_graph,
+            job_id,
+            payload,
+        )
+    except (
+        LockedQuestionError,
+        NoFeasiblePaperError,
+        OptimizationDataError,
+        OptimizationEmbeddingError,
+        OptimizationFilterError,
+        OptimizedTaskNotFoundError,
+        OptimizedTaskNotReviewableError,
+        OptimizedTaskSelectionError,
+        RequiredQuestionUnavailableError,
+        TeacherReviewNotFoundError,
+        TeacherReviewNotPendingError,
+    ) as exc:
+        await db.rollback()
+        raise optimized_task_http_error(exc) from exc
+
+
+@router.post(
+    "/optimized-tasks/{job_id}/review",
+    response_model=OptimizedPaperTaskResponse,
+)
+async def review_persisted_optimized_task(
+    job_id: ThreadId,
+    payload: OptimizedPaperTaskReview,
+    db: AsyncSession = Depends(get_db),
+    review_graph: Any = Depends(get_teacher_review_graph),
+) -> OptimizedPaperTaskResponse:
+    try:
+        return await review_optimized_task(
+            db,
+            review_graph,
+            job_id,
+            payload,
+        )
+    except (
+        OptimizedTaskNotFoundError,
+        OptimizedTaskNotReviewableError,
+        TeacherReviewNotFoundError,
+        TeacherReviewNotPendingError,
+    ) as exc:
+        await db.rollback()
+        raise optimized_task_http_error(exc) from exc

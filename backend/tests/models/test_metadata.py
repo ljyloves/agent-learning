@@ -14,6 +14,7 @@ class DatabaseMetadataTests(unittest.TestCase):
             "paper_job_questions",
             "paper_jobs",
             "question_core_competencies",
+            "question_analyses",
             "question_images",
             "question_knowledge_points",
             "question_options",
@@ -79,6 +80,16 @@ class DatabaseMetadataTests(unittest.TestCase):
 
         self.assertTrue(paper_jobs.c.review_result.type.none_as_null)
         self.assertTrue(questions.c.answer.type.none_as_null)
+
+    def test_question_analysis_foreign_key_is_registered(self):
+        analyses = Base.metadata.tables["question_analyses"]
+        self.assertEqual(
+            {
+                foreign_key.target_fullname
+                for foreign_key in analyses.c.question_id.foreign_keys
+            },
+            {"questions.id"},
+        )
 
 
 if __name__ == "__main__":

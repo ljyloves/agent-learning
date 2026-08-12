@@ -8,6 +8,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -32,6 +33,10 @@ def utc_now() -> datetime:
 class PaperJobModel(Base):
     __tablename__ = "paper_jobs"
     __table_args__ = (
+        CheckConstraint(
+            "generation_mode IN ('basic', 'optimized')",
+            name="ck_paper_jobs_generation_mode",
+        ),
         CheckConstraint(
             "status IN ('queued', 'running', 'awaiting_review', "
             "'completed', 'failed', 'cancelled')",
@@ -60,6 +65,13 @@ class PaperJobModel(Base):
         String(36),
         primary_key=True,
         default=new_id,
+    )
+    generation_mode: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="basic",
+        server_default=text("'basic'"),
+        index=True,
     )
     status: Mapped[str] = mapped_column(
         String(32),
@@ -281,4 +293,39 @@ class QuestionImageModel(Base):
         nullable=False,
         default=0,
         server_default=text("0"),
+    )
+
+
+class QuestionAnalysisModel(Base):
+    __tablename__ = "question_analyses"
+    __table_args__ = (
+        CheckConstraint(
+            "analysis_type IN ('difficulty_estimation', 'quality_review')",
+            name="ck_question_analyses_type",
+        ),
+        Index(
+            "ix_question_analyses_question_type_created",
+            "question_id",
+            "analysis_type",
+            "created_at",
+        ),
+    )
+
+    analysis_id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=new_id,
+    )
+    question_id: Mapped[str] = mapped_column(
+        ForeignKey("questions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    analysis_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    result: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.now(),
     )

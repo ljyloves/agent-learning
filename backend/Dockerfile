@@ -15,6 +15,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir -r requirements-documents.txt
 
+COPY requirements-optimization.txt .
+RUN pip install --no-cache-dir -r requirements-optimization.txt
+
 COPY . .
 
 EXPOSE 8000

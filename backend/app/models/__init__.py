@@ -1,6 +1,7 @@
 from app.models.knowledge import KnowledgeDocument
 from app.models.paper_agent import (
     PaperJobModel,
+    QuestionAnalysisModel,
     QuestionImageModel,
     QuestionModel,
     QuestionOptionModel,
@@ -24,6 +25,7 @@ __all__ = [
     "PaperJobModel",
     "PaperJobQuestionModel",
     "QuestionCoreCompetencyModel",
+    "QuestionAnalysisModel",
     "QuestionImageModel",
     "QuestionKnowledgePointModel",
     "QuestionModel",

@@ -181,3 +181,64 @@ async def submit_teacher_review(
     if resumed_state is None:
         raise RuntimeError("teacher review graph lost persisted state")
     return resumed_state
+
+
+async def sync_teacher_review_selection(
+    graph: Any,
+    thread_id: str,
+    selected_question_ids: list[str],
+    *,
+    operation: str,
+    actor: str,
+    comment: str | None,
+    locked_count: int,
+) -> PaperGraphState:
+    """Replace the selected ID set while preserving an active review interrupt."""
+
+    state = await get_teacher_review_state(graph, thread_id)
+    if state is None:
+        raise TeacherReviewNotFoundError(thread_id)
+    if state.execution.status != PaperJobStatus.AWAITING_REVIEW:
+        raise TeacherReviewNotPendingError(state.execution.status.value)
+    if len(selected_question_ids) != len(state.selected_question_ids):
+        raise ValueError("selection sync must preserve the paper question count")
+    if not set(selected_question_ids).issubset(state.candidate_question_ids):
+        raise ValueError("selection sync contains a non-candidate question")
+
+    changed_count = len(
+        set(selected_question_ids) ^ set(state.selected_question_ids)
+    ) // 2
+    replacement_count = state.execution.replacement_count + changed_count
+    report = PaperGraphReport(
+        report_id=(
+            f"selection-sync:{replacement_count}:{len(state.reports) + 1}"
+        ),
+        stage="teacher_review_sync",
+        summary=f"Teacher {operation} updated the optimized paper selection.",
+        metrics={
+            "operation": operation,
+            "actor": actor,
+            "comment": comment,
+            "changed_count": changed_count,
+            "locked_count": locked_count,
+        },
+    )
+    updated = PaperGraphState.model_validate(
+        state.model_copy(
+            update={
+                "selected_question_ids": selected_question_ids,
+                "reports": [*state.reports, report],
+                "execution": state.execution.model_copy(
+                    update={"replacement_count": replacement_count}
+                ),
+            }
+        )
+    )
+    await graph.aupdate_state(
+        teacher_review_thread_config(thread_id),
+        updated.model_dump(mode="python"),
+    )
+    persisted = await get_teacher_review_state(graph, thread_id)
+    if persisted is None:
+        raise RuntimeError("teacher review graph lost synchronized state")
+    return persisted

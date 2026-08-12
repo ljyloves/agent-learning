@@ -138,6 +138,12 @@ class PaperJobQuestionModel(Base):
         default=0,
         server_default=text("0"),
     )
+    is_locked: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
 
 
 class QuestionKnowledgePointModel(Base):

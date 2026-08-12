@@ -1,5 +1,35 @@
 """Pydantic schemas for paper generation."""
 
+from app.modules.paper_agent.schemas.annotation import (
+    TaxonomyAnnotationLLMOutput,
+    TaxonomyAnnotationRequest,
+    TaxonomyAnnotationResponse,
+)
+from app.modules.paper_agent.schemas.analysis import (
+    DifficultyEstimationResponse,
+    QualityIssue,
+    QualityIssueType,
+    QualityReviewResponse,
+    QualitySeverity,
+)
+from app.modules.paper_agent.schemas.optimization import (
+    ConstraintAudit,
+    CoverageConstraint,
+    DifficultyQuota,
+    DiversityConstraint,
+    KnowledgePointTarget,
+    OptimizedPaperRequest,
+    OptimizedPaperResult,
+)
+from app.modules.paper_agent.schemas.optimized_task import (
+    OptimizedPaperLockUpdate,
+    OptimizedPaperReassemble,
+    OptimizedPaperReplace,
+    OptimizedPaperTaskCreate,
+    OptimizedPaperTaskResponse,
+    OptimizedPaperTaskReview,
+)
+
 from app.modules.paper_agent.schemas.paper_job import (
     PaperJob,
     PaperJobStatus,
@@ -42,8 +72,14 @@ from app.modules.paper_agent.schemas.taxonomy import (
 __all__ = [
     "BiologyTaxonomyResponse",
     "CoreCompetencyRead",
+    "ConstraintAudit",
+    "CoverageConstraint",
     "CurriculumModuleRead",
+    "DifficultyQuota",
+    "DifficultyEstimationResponse",
+    "DiversityConstraint",
     "KnowledgePointRead",
+    "KnowledgePointTarget",
     "HybridQuestionCandidate",
     "HybridQuestionSearchRequest",
     "HybridQuestionSearchResponse",
@@ -51,6 +87,14 @@ __all__ = [
     "PaperJobQuestionCreate",
     "PaperJobQuestionCreated",
     "PaperJobStatus",
+    "OptimizedPaperRequest",
+    "OptimizedPaperResult",
+    "OptimizedPaperLockUpdate",
+    "OptimizedPaperReassemble",
+    "OptimizedPaperReplace",
+    "OptimizedPaperTaskCreate",
+    "OptimizedPaperTaskResponse",
+    "OptimizedPaperTaskReview",
     "ParsedQuestionsResponse",
     "Question",
     "QuestionDifficulty",
@@ -62,8 +106,15 @@ __all__ = [
     "QuestionResource",
     "QuestionSource",
     "QuestionType",
+    "QualityIssue",
+    "QualityIssueType",
+    "QualityReviewResponse",
+    "QualitySeverity",
     "ResourceType",
     "ReviewResult",
     "ReviewStatus",
     "SourceType",
+    "TaxonomyAnnotationLLMOutput",
+    "TaxonomyAnnotationRequest",
+    "TaxonomyAnnotationResponse",
 ]

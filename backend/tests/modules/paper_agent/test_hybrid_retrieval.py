@@ -111,7 +111,7 @@ class HybridRetrievalIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 client=self.qdrant,
                 embedder=deterministic_embed,
-                candidate_limit=1,
+                candidate_limit=settings.paper_agent_retrieval_pool_size,
             )
 
         self.assertGreaterEqual(indexed.indexed_count, 100)
@@ -130,7 +130,12 @@ class HybridRetrievalIntegrationTests(unittest.IsolatedAsyncioTestCase):
             all(candidate.vector_score is not None for candidate in result.candidates)
         )
         self.assertIn("细胞膜", result.candidates[0].stem)
-        self.assertIn("细胞膜", vector_only.candidates[0].stem)
+        self.assertEqual(len(vector_only.candidates), 1)
+        self.assertIsNotNone(vector_only.candidates[0].vector_score)
+        self.assertIn(
+            "BIO-M1-K02",
+            vector_only.candidates[0].knowledge_point_codes,
+        )
 
     async def test_rejects_unknown_or_untagged_index_selection(self):
         async with self.sessions() as session:
