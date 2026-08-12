@@ -15,6 +15,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir -r requirements-documents.txt
 
+RUN apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+    fontconfig \
+    fonts-noto-cjk \
+    libreoffice-writer \
+    && ln -s /usr/lib/libreoffice/program/soffice /usr/local/bin/soffice \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements-optimization.txt .
 RUN pip install --no-cache-dir -r requirements-optimization.txt
 

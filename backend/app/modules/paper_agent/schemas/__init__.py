@@ -60,6 +60,11 @@ from app.modules.paper_agent.schemas.source import (
     ResourceType,
     SourceType,
 )
+from app.modules.paper_agent.schemas.student_paper import (
+    AnswerSheetWordRequest,
+    StudentPaperWordRequest,
+    TeacherAnswerWordRequest,
+)
 from app.modules.paper_agent.schemas.taxonomy import (
     BiologyTaxonomyResponse,
     CoreCompetencyRead,
@@ -71,6 +76,7 @@ from app.modules.paper_agent.schemas.taxonomy import (
 
 __all__ = [
     "BiologyTaxonomyResponse",
+    "AnswerSheetWordRequest",
     "CoreCompetencyRead",
     "ConstraintAudit",
     "CoverageConstraint",
@@ -114,6 +120,8 @@ __all__ = [
     "ReviewResult",
     "ReviewStatus",
     "SourceType",
+    "StudentPaperWordRequest",
+    "TeacherAnswerWordRequest",
     "TaxonomyAnnotationLLMOutput",
     "TaxonomyAnnotationRequest",
     "TaxonomyAnnotationResponse",

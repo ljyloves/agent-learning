@@ -1,4 +1,6 @@
+from io import BytesIO
 from typing import Annotated, Any
+from urllib.parse import quote
 
 from fastapi import (
     APIRouter,
@@ -12,7 +14,7 @@ from fastapi import (
 )
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from app.database import get_db
 from app.config import settings
@@ -80,6 +82,11 @@ from app.modules.paper_agent.schemas.task import (
     PaperTaskCreate,
     PaperTaskResponse,
     PaperTaskReview,
+)
+from app.modules.paper_agent.schemas.student_paper import (
+    AnswerSheetWordRequest,
+    StudentPaperWordRequest,
+    TeacherAnswerWordRequest,
 )
 from app.modules.paper_agent.services.persistence import (
     PersistenceConflictError,
@@ -176,6 +183,22 @@ from app.modules.paper_agent.services.retrieval import (
     hybrid_search_questions,
     index_questions,
 )
+from app.modules.paper_agent.services.student_paper import (
+    DOCX_MIME_TYPE,
+    StudentPaperExportDataError,
+    StudentPaperTemplateError,
+    export_student_paper_word,
+)
+from app.modules.paper_agent.services.paper_companions import (
+    export_answer_sheet_word,
+    export_teacher_answer_word,
+)
+from app.modules.paper_agent.services.document_conversion import (
+    PDF_MIME_TYPE,
+    DocumentConversionError,
+    DocumentConverterUnavailableError,
+    convert_word_export_to_pdf,
+)
 
 
 router = APIRouter(prefix="/paper-agent", tags=["paper-agent"])
@@ -230,6 +253,69 @@ def teacher_review_response(
     )
 
 
+def word_download_response(exported, fallback_filename: str) -> StreamingResponse:
+    disposition = (
+        f"attachment; filename={fallback_filename}; "
+        f"filename*=UTF-8''{quote(exported.filename)}"
+    )
+    return StreamingResponse(
+        BytesIO(exported.content),
+        media_type=DOCX_MIME_TYPE,
+        headers={
+            "Content-Disposition": disposition,
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+def pdf_download_response(exported, fallback_filename: str) -> StreamingResponse:
+    disposition = (
+        f"attachment; filename={fallback_filename}; "
+        f"filename*=UTF-8''{quote(exported.filename)}"
+    )
+    return StreamingResponse(
+        BytesIO(exported.content),
+        media_type=PDF_MIME_TYPE,
+        headers={
+            "Content-Disposition": disposition,
+            "X-Content-Type-Options": "nosniff",
+            "X-PDF-Page-Count": str(exported.page_count),
+            "X-Render-Check": "passed",
+            "X-Expected-Image-Count": str(
+                exported.inspection.expected_image_count
+            ),
+            "X-Rendered-Image-Count": str(
+                exported.inspection.rendered_image_count
+            ),
+        },
+    )
+
+
+def pdf_export_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, QuestionNotFoundError):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    if isinstance(
+        exc,
+        (StudentPaperTemplateError, DocumentConverterUnavailableError),
+    ):
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        )
+    if isinstance(
+        exc,
+        (
+            StudentPaperExportDataError,
+            StoredResourceIntegrityError,
+            StoredResourceNotFoundError,
+            UnsafeStoredResourceError,
+        ),
+    ):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=str(exc),
+    )
 def optimized_task_http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, OptimizedTaskNotFoundError):
         return HTTPException(
@@ -344,6 +430,177 @@ async def assemble_basic_paper(
                 "available": exc.available,
             },
         ) from exc
+
+
+@router.post("/papers/student-word", response_class=StreamingResponse)
+async def export_student_paper(
+    payload: StudentPaperWordRequest,
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    try:
+        exported = await export_student_paper_word(
+            db,
+            payload,
+            storage_root=settings.paper_agent_storage_path,
+            template_root=settings.paper_agent_template_path,
+        )
+    except QuestionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except StudentPaperTemplateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except (
+        StudentPaperExportDataError,
+        StoredResourceIntegrityError,
+        StoredResourceNotFoundError,
+        UnsafeStoredResourceError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+
+    return word_download_response(exported, "student-paper.docx")
+
+
+@router.post("/papers/teacher-answer-word", response_class=StreamingResponse)
+async def export_teacher_answer(
+    payload: TeacherAnswerWordRequest,
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    try:
+        exported = await export_teacher_answer_word(
+            db,
+            payload,
+            storage_root=settings.paper_agent_storage_path,
+            template_root=settings.paper_agent_template_path,
+        )
+    except QuestionNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except StudentPaperTemplateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except (
+        StudentPaperExportDataError,
+        StoredResourceIntegrityError,
+        StoredResourceNotFoundError,
+        UnsafeStoredResourceError,
+    ) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    return word_download_response(exported, "teacher-answer.docx")
+
+
+@router.post("/papers/student-pdf", response_class=StreamingResponse)
+async def export_student_paper_pdf(
+    payload: StudentPaperWordRequest,
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    try:
+        word = await export_student_paper_word(
+            db,
+            payload,
+            storage_root=settings.paper_agent_storage_path,
+            template_root=settings.paper_agent_template_path,
+        )
+        exported = await convert_word_export_to_pdf(word)
+    except (
+        DocumentConversionError,
+        DocumentConverterUnavailableError,
+        QuestionNotFoundError,
+        StudentPaperExportDataError,
+        StudentPaperTemplateError,
+        StoredResourceIntegrityError,
+        StoredResourceNotFoundError,
+        UnsafeStoredResourceError,
+    ) as exc:
+        raise pdf_export_http_error(exc) from exc
+    return pdf_download_response(exported, "student-paper.pdf")
+
+
+@router.post("/papers/teacher-answer-pdf", response_class=StreamingResponse)
+async def export_teacher_answer_pdf(
+    payload: TeacherAnswerWordRequest,
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    try:
+        word = await export_teacher_answer_word(
+            db,
+            payload,
+            storage_root=settings.paper_agent_storage_path,
+            template_root=settings.paper_agent_template_path,
+        )
+        exported = await convert_word_export_to_pdf(word)
+    except (
+        DocumentConversionError,
+        DocumentConverterUnavailableError,
+        QuestionNotFoundError,
+        StudentPaperExportDataError,
+        StudentPaperTemplateError,
+        StoredResourceIntegrityError,
+        StoredResourceNotFoundError,
+        UnsafeStoredResourceError,
+    ) as exc:
+        raise pdf_export_http_error(exc) from exc
+    return pdf_download_response(exported, "teacher-answer.pdf")
+
+
+@router.post("/papers/answer-sheet-word", response_class=StreamingResponse)
+async def export_answer_sheet(
+    payload: AnswerSheetWordRequest,
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    try:
+        exported = await export_answer_sheet_word(
+            db,
+            payload,
+            template_root=settings.paper_agent_template_path,
+        )
+    except QuestionNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except StudentPaperTemplateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except StudentPaperExportDataError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    return word_download_response(exported, "answer-sheet.docx")
+
+
+@router.post("/papers/answer-sheet-pdf", response_class=StreamingResponse)
+async def export_answer_sheet_pdf(
+    payload: AnswerSheetWordRequest,
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    try:
+        word = await export_answer_sheet_word(
+            db,
+            payload,
+            template_root=settings.paper_agent_template_path,
+        )
+        exported = await convert_word_export_to_pdf(word)
+    except (
+        DocumentConversionError,
+        DocumentConverterUnavailableError,
+        QuestionNotFoundError,
+        StudentPaperExportDataError,
+        StudentPaperTemplateError,
+    ) as exc:
+        raise pdf_export_http_error(exc) from exc
+    return pdf_download_response(exported, "answer-sheet.pdf")
 
 
 @router.post(

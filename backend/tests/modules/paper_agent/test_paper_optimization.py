@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -114,7 +114,10 @@ async def deterministic_embed(texts: list[str]) -> list[list[float]]:
     return vectors
 
 
-def strict_request() -> OptimizedPaperRequest:
+def strict_request(
+    *,
+    exclude_question_ids: list[str] | None = None,
+) -> OptimizedPaperRequest:
     return OptimizedPaperRequest(
         module_code="BIO-M1",
         question_count=4,
@@ -150,6 +153,7 @@ def strict_request() -> OptimizedPaperRequest:
             maximum_questions_per_source=2,
             semantic_similarity_threshold=0.94,
         ),
+        exclude_question_ids=exclude_question_ids or [],
         random_seed=29,
     )
 
@@ -160,6 +164,9 @@ class PaperOptimizationTests(unittest.IsolatedAsyncioTestCase):
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         now = datetime.now(timezone.utc)
         async with self.sessions() as session:
+            self.preexisting_question_ids = list(
+                (await session.scalars(select(QuestionModel.id))).all()
+            )
             session.add_all(
                 [
                     QuestionSourceModel(
@@ -291,7 +298,9 @@ class PaperOptimizationTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as session:
             result = await optimize_paper(
                 session,
-                strict_request(),
+                strict_request(
+                    exclude_question_ids=self.preexisting_question_ids,
+                ),
                 embedder=deterministic_embed,
             )
 
@@ -318,7 +327,9 @@ class PaperOptimizationTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as session:
             result = await optimize_paper(
                 session,
-                strict_request(),
+                strict_request(
+                    exclude_question_ids=self.preexisting_question_ids,
+                ),
                 embedder=deterministic_embed,
             )
 
@@ -331,7 +342,9 @@ class PaperOptimizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse({"bio029-q3", "bio029-q6"} <= selected_ids)
 
     async def test_reports_no_feasible_solution_without_relaxing_diversity(self):
-        payload = strict_request().model_dump(mode="json")
+        payload = strict_request(
+            exclude_question_ids=self.preexisting_question_ids,
+        ).model_dump(mode="json")
         payload["diversity"]["minimum_distinct_sources"] = 3
         request = OptimizedPaperRequest.model_validate(payload)
 
@@ -354,7 +367,9 @@ class PaperOptimizationTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(OptimizationEmbeddingError):
                 await optimize_paper(
                     session,
-                    strict_request(),
+                    strict_request(
+                        exclude_question_ids=self.preexisting_question_ids,
+                    ),
                     embedder=invalid_embed,
                 )
 

@@ -67,7 +67,10 @@ async def deterministic_embed(texts: list[str]) -> list[list[float]]:
     ]
 
 
-def optimization_request() -> OptimizedPaperRequest:
+def optimization_request(
+    *,
+    exclude_question_ids: list[str] | None = None,
+) -> OptimizedPaperRequest:
     return OptimizedPaperRequest(
         module_code="BIO-M1",
         question_count=2,
@@ -95,6 +98,7 @@ def optimization_request() -> OptimizedPaperRequest:
             maximum_questions_per_source=1,
             semantic_similarity_threshold=0.94,
         ),
+        exclude_question_ids=exclude_question_ids or [],
         random_seed=30,
     )
 
@@ -120,6 +124,9 @@ class OptimizedPaperTaskTests(unittest.IsolatedAsyncioTestCase):
         self.job_ids: list[str] = []
         now = datetime.now(timezone.utc)
         async with self.sessions() as session:
+            self.preexisting_question_ids = list(
+                (await session.scalars(select(QuestionModel.id))).all()
+            )
             session.add_all(
                 [
                     QuestionSourceModel(
@@ -205,7 +212,11 @@ class OptimizedPaperTaskTests(unittest.IsolatedAsyncioTestCase):
         task = await create_optimized_task(
             session,
             self.review_graph,
-            OptimizedPaperTaskCreate(optimization=optimization_request()),
+            OptimizedPaperTaskCreate(
+                optimization=optimization_request(
+                    exclude_question_ids=self.preexisting_question_ids,
+                )
+            ),
             embedder=deterministic_embed,
         )
         self.job_ids.append(task.job_id)

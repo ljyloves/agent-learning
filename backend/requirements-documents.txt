@@ -1,1 +1,2 @@
 pypdf[image]>=6.0.0,<7.0.0
+python-docx>=1.1.2,<2.0.0
