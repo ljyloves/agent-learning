@@ -1,5 +1,5 @@
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
@@ -30,12 +30,16 @@ from app.modules.paper_agent.schemas.optimization import (
 )
 from app.modules.paper_agent.schemas.optimized_task import (
     OptimizedPaperLockUpdate,
+    OptimizedPaperInfo,
     OptimizedPaperReassemble,
     OptimizedPaperReplace,
     OptimizedPaperTaskCreate,
     OptimizedPaperTaskReview,
 )
-from app.modules.paper_agent.schemas.paper_job import PaperJobStatus
+from app.modules.paper_agent.schemas.paper_job import (
+    PaperJobStatus,
+    ReviewStatus,
+)
 from app.modules.paper_agent.schemas.question import QuestionType
 from app.modules.paper_agent.services.checkpoint import get_teacher_review_state
 from app.modules.paper_agent.services.optimization import NoFeasiblePaperError
@@ -43,6 +47,7 @@ from app.modules.paper_agent.services.optimized_task import (
     LockedQuestionError,
     create_optimized_task,
     get_optimized_task,
+    list_optimized_tasks,
     reassemble_optimized_task,
     replace_optimized_question,
     review_optimized_task,
@@ -208,19 +213,139 @@ class OptimizedPaperTaskTests(unittest.IsolatedAsyncioTestCase):
             await session.commit()
         await self.engine.dispose()
 
-    async def create_task(self, session):
+    async def create_task(self, session, *, paper_info=None):
         task = await create_optimized_task(
             session,
             self.review_graph,
             OptimizedPaperTaskCreate(
                 optimization=optimization_request(
                     exclude_question_ids=self.preexisting_question_ids,
-                )
+                ),
+                paper_info=paper_info,
             ),
             embedder=deterministic_embed,
         )
         self.job_ids.append(task.job_id)
         return task
+
+    async def test_list_filters_paginates_and_orders_by_updated_at(self):
+        async with self.sessions() as session:
+            first = await self.create_task(
+                session,
+                paper_info=OptimizedPaperInfo(
+                    paper_name="细胞结构月考试卷",
+                    grade="高一",
+                    exam_type="月考",
+                    duration_minutes=60,
+                ),
+            )
+            second = await self.create_task(
+                session,
+                paper_info=OptimizedPaperInfo(
+                    paper_name="分子与细胞单元测试",
+                    grade="高一",
+                    exam_type="单元测试",
+                    duration_minutes=45,
+                ),
+            )
+            now = datetime.now(timezone.utc)
+            first_job = await session.get(PaperJobModel, first.job_id)
+            second_job = await session.get(PaperJobModel, second.job_id)
+            first_job.updated_at = now - timedelta(minutes=1)
+            second_job.updated_at = now
+            await session.commit()
+
+            page_one = await list_optimized_tasks(
+                session,
+                page=1,
+                page_size=1,
+            )
+            page_two = await list_optimized_tasks(
+                session,
+                page=2,
+                page_size=1,
+            )
+            by_name = await list_optimized_tasks(
+                session,
+                keyword="细胞结构",
+            )
+            by_id = await list_optimized_tasks(
+                session,
+                keyword=second.job_id,
+            )
+            pending = await list_optimized_tasks(
+                session,
+                status=PaperJobStatus.AWAITING_REVIEW,
+                review_status=ReviewStatus.PENDING,
+            )
+
+        self.assertGreaterEqual(page_one.total, 2)
+        self.assertEqual(page_one.pages, page_one.total)
+        self.assertEqual(page_one.items[0].job_id, second.job_id)
+        self.assertEqual(page_two.items[0].job_id, first.job_id)
+        self.assertEqual(by_name.total, 1)
+        self.assertEqual(by_name.items[0].paper_name, "细胞结构月考试卷")
+        self.assertEqual(by_id.total, 1)
+        self.assertEqual(by_id.items[0].job_id, second.job_id)
+        pending_ids = {item.job_id for item in pending.items}
+        self.assertTrue({first.job_id, second.job_id}.issubset(pending_ids))
+        self.assertEqual(page_one.items[0].question_count, 2)
+        self.assertEqual(page_one.items[0].total_score, 8)
+        self.assertTrue(page_one.items[0].awaiting_teacher)
+
+    async def test_legacy_request_uses_defaults_and_remains_readable(self):
+        async with self.sessions() as session:
+            created = await self.create_task(session)
+            job = await session.get(PaperJobModel, created.job_id)
+            job.assembly_request = job.assembly_request["optimization"]
+            await session.commit()
+
+            listed = await list_optimized_tasks(
+                session,
+                keyword=created.job_id,
+            )
+            persisted = await get_optimized_task(session, created.job_id)
+
+        self.assertEqual(listed.total, 1)
+        item = listed.items[0]
+        self.assertEqual(item.paper_name, "未命名高中生物试卷")
+        self.assertEqual(item.grade, "高中")
+        self.assertEqual(item.exam_type, "练习")
+        self.assertEqual(item.duration_minutes, 90)
+        self.assertEqual(persisted.job_id, created.job_id)
+
+    async def test_reassemble_preserves_paper_info(self):
+        paper_info = OptimizedPaperInfo(
+            paper_name="BIO-038 元数据试卷",
+            grade="高二",
+            exam_type="期中考试",
+            duration_minutes=75,
+        )
+        async with self.sessions() as session:
+            created = await self.create_task(session, paper_info=paper_info)
+            reassembled = await reassemble_optimized_task(
+                session,
+                self.review_graph,
+                created.job_id,
+                OptimizedPaperReassemble(
+                    reviewer="teacher-metadata",
+                    random_seed=31,
+                ),
+                embedder=deterministic_embed,
+            )
+            job = await session.get(PaperJobModel, created.job_id)
+            listed = await list_optimized_tasks(
+                session,
+                keyword="BIO-038",
+            )
+
+        self.assertEqual(reassembled.job_id, created.job_id)
+        self.assertEqual(
+            job.assembly_request["paper_info"],
+            paper_info.model_dump(),
+        )
+        self.assertEqual(listed.total, 1)
+        self.assertEqual(listed.items[0].duration_minutes, 75)
 
     async def test_locked_question_cannot_be_replaced(self):
         async with self.sessions() as session:

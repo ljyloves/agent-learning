@@ -8,6 +8,7 @@ from fastapi import (
     File,
     HTTPException,
     Path,
+    Query,
     Request,
     UploadFile,
     status,
@@ -46,6 +47,7 @@ from app.modules.paper_agent.schemas.optimized_task import (
     OptimizedPaperReassemble,
     OptimizedPaperReplace,
     OptimizedPaperTaskCreate,
+    OptimizedPaperTaskListResponse,
     OptimizedPaperTaskResponse,
     OptimizedPaperTaskReview,
 )
@@ -57,16 +59,24 @@ from app.modules.paper_agent.schemas.checkpoint import (
     TeacherReviewTaskResponse,
     TeacherReviewTaskStart,
 )
-from app.modules.paper_agent.schemas.paper_job import PaperJobStatus
+from app.modules.paper_agent.schemas.paper_job import (
+    PaperJobStatus,
+    ReviewStatus,
+)
 from app.modules.paper_agent.schemas.ingestion import (
     IngestedResourceResponse,
     WebPageCollectRequest,
+)
+from app.modules.paper_agent.schemas.library import (
+    QuestionLibraryResponse,
+    SourceLibraryResponse,
 )
 from app.modules.paper_agent.schemas.parsing import (
     ParsedQuestionsResponse,
     QuestionParseRequest,
 )
-from app.modules.paper_agent.schemas.question import Question
+from app.modules.paper_agent.schemas.question import Question, QuestionType
+from app.modules.paper_agent.schemas.source import SourceType
 from app.modules.paper_agent.schemas.retrieval import (
     HybridQuestionSearchRequest,
     HybridQuestionSearchResponse,
@@ -126,10 +136,21 @@ from app.modules.paper_agent.services.optimized_task import (
     OptimizedTaskSelectionError,
     create_optimized_task,
     get_optimized_task,
+    list_optimized_tasks,
     reassemble_optimized_task,
     replace_optimized_question,
     review_optimized_task,
     update_optimized_task_locks,
+)
+from app.modules.paper_agent.services.optimized_task_export import (
+    ZIP_MIME_TYPE,
+    OptimizedExportDocument,
+    OptimizedExportFormat,
+    OptimizedTaskExportDataError,
+    OptimizedTaskNotApprovedError,
+    export_optimized_task_file,
+    export_optimized_task_package,
+    validate_optimized_task_export_readiness,
 )
 from app.modules.paper_agent.services.taxonomy import get_biology_taxonomy
 from app.modules.paper_agent.services.taxonomy_annotation import (
@@ -166,8 +187,12 @@ from app.modules.paper_agent.services.task import (
 )
 from app.modules.paper_agent.services.web_ingestion import collect_openstax_webpage
 from app.modules.paper_agent.services.document_extraction import DocumentExtractionError
-from app.modules.paper_agent.services.question_ingestion import parse_uploaded_questions
 from app.modules.paper_agent.services.question_parser import QuestionParseError
+from app.modules.paper_agent.services.source_library import (
+    list_library_questions,
+    list_sources,
+    parse_questions_with_status,
+)
 from app.modules.paper_agent.services.resource_storage import (
     QuestionNotFoundError,
     StoredResourceIntegrityError,
@@ -291,6 +316,22 @@ def pdf_download_response(exported, fallback_filename: str) -> StreamingResponse
     )
 
 
+def archive_download_response(exported, fallback_filename: str) -> StreamingResponse:
+    disposition = (
+        f"attachment; filename={fallback_filename}; "
+        f"filename*=UTF-8''{quote(exported.filename)}"
+    )
+    return StreamingResponse(
+        BytesIO(exported.content),
+        media_type=ZIP_MIME_TYPE,
+        headers={
+            "Content-Disposition": disposition,
+            "X-Content-Type-Options": "nosniff",
+            "X-Archive-Entry-Count": str(len(exported.entries)),
+        },
+    )
+
+
 def pdf_export_http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, QuestionNotFoundError):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
@@ -316,6 +357,25 @@ def pdf_export_http_error(exc: Exception) -> HTTPException:
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail=str(exc),
     )
+
+
+def optimized_export_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, OptimizedTaskNotFoundError):
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="optimized paper task was not found",
+        )
+    if isinstance(
+        exc,
+        (OptimizedTaskNotApprovedError, OptimizedTaskExportDataError),
+    ):
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        )
+    return pdf_export_http_error(exc)
+
+
 def optimized_task_http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, OptimizedTaskNotFoundError):
         return HTTPException(
@@ -725,7 +785,7 @@ async def parse_teacher_questions(
     db: AsyncSession = Depends(get_db),
 ) -> ParsedQuestionsResponse:
     try:
-        return await parse_uploaded_questions(
+        return await parse_questions_with_status(
             db,
             resource_id,
             payload,
@@ -757,6 +817,48 @@ async def parse_teacher_questions(
             status_code=status.HTTP_409_CONFLICT,
             detail="parsed question or resource conflicts with stored data",
         ) from exc
+
+
+@router.get(
+    "/library/sources",
+    response_model=SourceLibraryResponse,
+)
+async def read_source_library(
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 10,
+    keyword: Annotated[str | None, Query(max_length=100)] = None,
+    source_type: Annotated[SourceType | None, Query()] = None,
+    db: AsyncSession = Depends(get_db),
+) -> SourceLibraryResponse:
+    return await list_sources(
+        db,
+        page=page,
+        page_size=page_size,
+        keyword=keyword,
+        source_type=source_type,
+    )
+
+
+@router.get(
+    "/library/questions",
+    response_model=QuestionLibraryResponse,
+)
+async def read_question_library(
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 10,
+    keyword: Annotated[str | None, Query(max_length=100)] = None,
+    question_type: Annotated[QuestionType | None, Query()] = None,
+    source_id: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
+    db: AsyncSession = Depends(get_db),
+) -> QuestionLibraryResponse:
+    return await list_library_questions(
+        db,
+        page=page,
+        page_size=page_size,
+        keyword=keyword,
+        question_type=question_type,
+        source_id=source_id,
+    )
 
 
 @router.get(
@@ -1237,6 +1339,31 @@ async def create_persisted_optimized_task(
 
 
 @router.get(
+    "/optimized-tasks",
+    response_model=OptimizedPaperTaskListResponse,
+)
+async def read_persisted_optimized_tasks(
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    status_filter: Annotated[
+        PaperJobStatus | None,
+        Query(alias="status"),
+    ] = None,
+    review_status: ReviewStatus | None = None,
+    keyword: Annotated[str | None, Query(max_length=200)] = None,
+    db: AsyncSession = Depends(get_db),
+) -> OptimizedPaperTaskListResponse:
+    return await list_optimized_tasks(
+        db,
+        page=page,
+        page_size=page_size,
+        status=status_filter,
+        review_status=review_status,
+        keyword=keyword,
+    )
+
+
+@router.get(
     "/optimized-tasks/{job_id}",
     response_model=OptimizedPaperTaskResponse,
 )
@@ -1349,6 +1476,13 @@ async def review_persisted_optimized_task(
     review_graph: Any = Depends(get_teacher_review_graph),
 ) -> OptimizedPaperTaskResponse:
     try:
+        if payload.action == "approve":
+            await validate_optimized_task_export_readiness(
+                db,
+                job_id,
+                storage_root=settings.paper_agent_storage_path,
+                template_root=settings.paper_agent_template_path,
+            )
         return await review_optimized_task(
             db,
             review_graph,
@@ -1360,6 +1494,100 @@ async def review_persisted_optimized_task(
         OptimizedTaskNotReviewableError,
         TeacherReviewNotFoundError,
         TeacherReviewNotPendingError,
+        OptimizedTaskExportDataError,
+        DocumentConversionError,
+        DocumentConverterUnavailableError,
+        QuestionNotFoundError,
+        StudentPaperExportDataError,
+        StudentPaperTemplateError,
+        StoredResourceIntegrityError,
+        StoredResourceNotFoundError,
+        UnsafeStoredResourceError,
     ) as exc:
         await db.rollback()
+        if isinstance(
+            exc,
+            (
+                OptimizedTaskExportDataError,
+                DocumentConversionError,
+                DocumentConverterUnavailableError,
+                QuestionNotFoundError,
+                StudentPaperExportDataError,
+                StudentPaperTemplateError,
+                StoredResourceIntegrityError,
+                StoredResourceNotFoundError,
+                UnsafeStoredResourceError,
+            ),
+        ):
+            raise optimized_export_http_error(exc) from exc
         raise optimized_task_http_error(exc) from exc
+
+
+@router.get(
+    "/optimized-tasks/{job_id}/exports/{document}/{file_format}",
+    response_class=StreamingResponse,
+)
+async def export_approved_optimized_task_file(
+    job_id: ThreadId,
+    document: OptimizedExportDocument,
+    file_format: OptimizedExportFormat,
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    try:
+        exported = await export_optimized_task_file(
+            db,
+            job_id,
+            document,
+            file_format,
+            storage_root=settings.paper_agent_storage_path,
+            template_root=settings.paper_agent_template_path,
+        )
+    except (
+        DocumentConversionError,
+        DocumentConverterUnavailableError,
+        OptimizedTaskExportDataError,
+        OptimizedTaskNotApprovedError,
+        OptimizedTaskNotFoundError,
+        QuestionNotFoundError,
+        StudentPaperExportDataError,
+        StudentPaperTemplateError,
+        StoredResourceIntegrityError,
+        StoredResourceNotFoundError,
+        UnsafeStoredResourceError,
+    ) as exc:
+        raise optimized_export_http_error(exc) from exc
+    if file_format == "docx":
+        return word_download_response(exported, f"{document}.docx")
+    return pdf_download_response(exported, f"{document}.pdf")
+
+
+@router.get(
+    "/optimized-tasks/{job_id}/exports.zip",
+    response_class=StreamingResponse,
+)
+async def export_approved_optimized_task_package(
+    job_id: ThreadId,
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    try:
+        exported = await export_optimized_task_package(
+            db,
+            job_id,
+            storage_root=settings.paper_agent_storage_path,
+            template_root=settings.paper_agent_template_path,
+        )
+    except (
+        DocumentConversionError,
+        DocumentConverterUnavailableError,
+        OptimizedTaskExportDataError,
+        OptimizedTaskNotApprovedError,
+        OptimizedTaskNotFoundError,
+        QuestionNotFoundError,
+        StudentPaperExportDataError,
+        StudentPaperTemplateError,
+        StoredResourceIntegrityError,
+        StoredResourceNotFoundError,
+        UnsafeStoredResourceError,
+    ) as exc:
+        raise optimized_export_http_error(exc) from exc
+    return archive_download_response(exported, "paper-package.zip")

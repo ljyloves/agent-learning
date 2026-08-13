@@ -19,12 +19,6 @@ from app.modules.paper_agent.schemas.optimization import (
     OptimizedPaperRequest,
     OptimizedPaperResult,
 )
-
-
-ReviewComment = Annotated[
-    str,
-    StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
-]
 from app.modules.paper_agent.schemas.paper_job import (
     PaperJobStatus,
     ReviewResult,
@@ -32,10 +26,53 @@ from app.modules.paper_agent.schemas.paper_job import (
 )
 
 
+ReviewComment = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
+]
+
+
+class OptimizedPaperInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    paper_name: str | None = Field(default=None, min_length=1, max_length=200)
+    grade: str | None = Field(default=None, min_length=1, max_length=50)
+    exam_type: str | None = Field(default=None, min_length=1, max_length=50)
+    duration_minutes: int | None = Field(default=None, ge=1, le=600)
+
+
 class OptimizedPaperTaskCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     optimization: OptimizedPaperRequest
+    paper_info: OptimizedPaperInfo | None = None
+
+
+class OptimizedPaperTaskListItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: Identifier
+    paper_name: str
+    grade: str
+    exam_type: str
+    duration_minutes: int = Field(ge=1, le=600)
+    question_count: int = Field(ge=0)
+    total_score: int = Field(ge=0)
+    status: PaperJobStatus
+    review_status: ReviewStatus
+    awaiting_teacher: bool
+    created_at: AwareDatetime
+    updated_at: AwareDatetime
+
+
+class OptimizedPaperTaskListResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[OptimizedPaperTaskListItem]
+    page: int = Field(ge=1)
+    page_size: int = Field(ge=1)
+    total: int = Field(ge=0)
+    pages: int = Field(ge=0)
 
 
 class OptimizedPaperLockUpdate(BaseModel):

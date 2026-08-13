@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import PaperJobModel, PaperJobQuestionModel
@@ -20,9 +20,12 @@ from app.modules.paper_agent.schemas.optimization import (
 )
 from app.modules.paper_agent.schemas.optimized_task import (
     OptimizedPaperLockUpdate,
+    OptimizedPaperInfo,
     OptimizedPaperReassemble,
     OptimizedPaperReplace,
     OptimizedPaperTaskCreate,
+    OptimizedPaperTaskListItem,
+    OptimizedPaperTaskListResponse,
     OptimizedPaperTaskResponse,
     OptimizedPaperTaskReview,
 )
@@ -62,6 +65,12 @@ class LockedQuestionError(ValueError):
     pass
 
 
+DEFAULT_PAPER_NAME = "未命名高中生物试卷"
+DEFAULT_GRADE = "高中"
+DEFAULT_EXAM_TYPE = "练习"
+DEFAULT_DURATION_MINUTES = 90
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -89,7 +98,50 @@ def _paper(job: PaperJobModel) -> OptimizedPaperResult:
 def _request(job: PaperJobModel) -> OptimizedPaperRequest:
     if job.assembly_request is None:
         raise OptimizedTaskNotFoundError(job.job_id)
-    return OptimizedPaperRequest.model_validate(job.assembly_request)
+    payload = job.assembly_request
+    if "optimization" in payload:
+        payload = payload["optimization"]
+    return OptimizedPaperRequest.model_validate(payload)
+
+
+def _paper_info(job: PaperJobModel) -> OptimizedPaperInfo:
+    payload = job.assembly_request or {}
+    raw_info = payload.get("paper_info") if isinstance(payload, dict) else None
+    return OptimizedPaperInfo.model_validate(raw_info or {})
+
+
+def _assembly_request_payload(
+    request: OptimizedPaperRequest,
+    paper_info: OptimizedPaperInfo | None,
+) -> dict[str, Any]:
+    return {
+        "optimization": request.model_dump(mode="json"),
+        "paper_info": (paper_info or OptimizedPaperInfo()).model_dump(
+            mode="json",
+            exclude_none=True,
+        ),
+    }
+
+
+def _list_item(job: PaperJobModel) -> OptimizedPaperTaskListItem:
+    request = _request(job)
+    paper_info = _paper_info(job)
+    return OptimizedPaperTaskListItem(
+        job_id=job.job_id,
+        paper_name=paper_info.paper_name or DEFAULT_PAPER_NAME,
+        grade=paper_info.grade or DEFAULT_GRADE,
+        exam_type=paper_info.exam_type or DEFAULT_EXAM_TYPE,
+        duration_minutes=(
+            paper_info.duration_minutes or DEFAULT_DURATION_MINUTES
+        ),
+        question_count=request.question_count,
+        total_score=request.total_score,
+        status=job.status,
+        review_status=job.review_status,
+        awaiting_teacher=job.status == PaperJobStatus.AWAITING_REVIEW.value,
+        created_at=job.created_at,
+        updated_at=job.updated_at,
+    )
 
 
 async def _locked_question_ids(
@@ -188,7 +240,10 @@ async def create_optimized_task(
         generation_mode="optimized",
         status=PaperJobStatus.AWAITING_REVIEW.value,
         review_status=ReviewStatus.PENDING.value,
-        assembly_request=payload.optimization.model_dump(mode="json"),
+        assembly_request=_assembly_request_payload(
+            payload.optimization,
+            payload.paper_info,
+        ),
         assembly_result=paper.model_dump(mode="json"),
         created_at=now,
         updated_at=now,
@@ -238,6 +293,62 @@ async def get_optimized_task(
 ) -> OptimizedPaperTaskResponse:
     job = await _load_job(session, job_id)
     return await _task_response(session, job)
+
+
+async def list_optimized_tasks(
+    session: AsyncSession,
+    *,
+    page: int = 1,
+    page_size: int = 20,
+    status: PaperJobStatus | None = None,
+    review_status: ReviewStatus | None = None,
+    keyword: str | None = None,
+) -> OptimizedPaperTaskListResponse:
+    filters = [PaperJobModel.generation_mode == "optimized"]
+    if status is not None:
+        filters.append(PaperJobModel.status == status.value)
+    if review_status is not None:
+        filters.append(PaperJobModel.review_status == review_status.value)
+    normalized_keyword = keyword.strip() if keyword else None
+    if normalized_keyword:
+        pattern = f"%{normalized_keyword}%"
+        paper_name = PaperJobModel.assembly_request[
+            "paper_info"
+        ]["paper_name"].astext
+        filters.append(
+            or_(
+                PaperJobModel.job_id.ilike(pattern),
+                paper_name.ilike(pattern),
+            )
+        )
+
+    total = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(PaperJobModel)
+            .where(*filters)
+        )
+        or 0
+    )
+    jobs = list(
+        await session.scalars(
+            select(PaperJobModel)
+            .where(*filters)
+            .order_by(
+                PaperJobModel.updated_at.desc(),
+                PaperJobModel.job_id.desc(),
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    )
+    return OptimizedPaperTaskListResponse(
+        items=[_list_item(job) for job in jobs],
+        page=page,
+        page_size=page_size,
+        total=total,
+        pages=(total + page_size - 1) // page_size,
+    )
 
 
 async def update_optimized_task_locks(
@@ -326,7 +437,10 @@ async def _persist_revision(
     if not locked_ids.issubset(new_ids):
         raise LockedQuestionError("optimized revision attempted to replace a locked question")
     await _replace_relations(session, job.job_id, new_paper, locked_ids)
-    job.assembly_request = request.model_dump(mode="json")
+    job.assembly_request = _assembly_request_payload(
+        request,
+        _paper_info(job),
+    )
     job.assembly_result = new_paper.model_dump(mode="json")
     job.updated_at = utc_now()
     await session.flush()

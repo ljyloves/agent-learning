@@ -76,6 +76,7 @@ async def collect_openstax_webpage(
                 ),
                 attribution="OpenStax",
                 license="CC BY-NC-SA",
+                processing_status="uploaded",
             )
         )
         await session.flush()

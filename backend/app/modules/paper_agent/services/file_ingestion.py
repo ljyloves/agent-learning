@@ -206,6 +206,7 @@ async def save_teacher_upload(
                 name=original_name,
                 uri=str(destination),
                 external_id=original_name,
+                processing_status="uploaded",
             )
         )
         await session.flush()

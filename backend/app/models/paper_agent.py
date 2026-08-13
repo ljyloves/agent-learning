@@ -123,6 +123,15 @@ class QuestionSourceModel(Base):
             "uri IS NOT NULL OR external_id IS NOT NULL",
             name="ck_question_sources_locator",
         ),
+        CheckConstraint(
+            "processing_status IN ('uploaded', 'processing', 'completed', 'failed')",
+            name="ck_question_sources_processing_status",
+        ),
+        CheckConstraint(
+            "(processing_status = 'failed' AND parse_failure_reason IS NOT NULL) OR "
+            "(processing_status <> 'failed' AND parse_failure_reason IS NULL)",
+            name="ck_question_sources_parse_failure_reason",
+        ),
     )
 
     source_id: Mapped[str] = mapped_column(String(128), primary_key=True)
@@ -138,6 +147,15 @@ class QuestionSourceModel(Base):
     )
     attribution: Mapped[str | None] = mapped_column(Text)
     license: Mapped[str | None] = mapped_column(String(255))
+    processing_status: Mapped[str] = mapped_column(
+        String(24),
+        nullable=False,
+        default="completed",
+        server_default=text("'completed'"),
+        index=True,
+    )
+    parse_failure_reason: Mapped[str | None] = mapped_column(Text)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class QuestionResourceModel(Base):
