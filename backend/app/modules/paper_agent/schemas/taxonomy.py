@@ -16,6 +16,7 @@ class KnowledgePointRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     code: str
+    parent_code: str | None = None
     name: str
     description: str
     sort_order: int

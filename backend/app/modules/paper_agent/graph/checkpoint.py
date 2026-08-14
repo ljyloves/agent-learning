@@ -17,11 +17,21 @@ from app.modules.paper_agent.graph.workflow import (
     build_paper_agent_graph,
     build_teacher_review_graph,
 )
+from app.modules.paper_agent.graph.conversation_workflow import (
+    build_conversation_agent_graph,
+)
+from app.modules.paper_agent.services.conversation_graph import (
+    build_conversation_workflow_handlers,
+)
 
 
 CHECKPOINT_ALLOWED_MSGPACK_MODULES = [
     ("app.modules.paper_agent.graph.state", "PaperGraphDecision"),
     ("app.modules.paper_agent.graph.state", "PaperGraphReportLevel"),
+    (
+        "app.modules.paper_agent.schemas.conversation_graph",
+        "ConversationGraphStatus",
+    ),
     ("app.modules.paper_agent.schemas.paper_job", "PaperJobStatus"),
 ]
 
@@ -30,6 +40,7 @@ CHECKPOINT_ALLOWED_MSGPACK_MODULES = [
 class PaperGraphRuntime:
     graph: CompiledStateGraph
     teacher_review_graph: CompiledStateGraph
+    conversation_graph: CompiledStateGraph
     checkpointer: AsyncPostgresSaver
     pool: AsyncConnectionPool
 
@@ -59,10 +70,15 @@ async def create_paper_graph_runtime() -> AsyncIterator[PaperGraphRuntime]:
             ),
         )
         await checkpointer.setup()
+        teacher_review_graph = build_teacher_review_graph(
+            checkpointer=checkpointer
+        )
         yield PaperGraphRuntime(
             graph=build_paper_agent_graph(checkpointer=checkpointer),
-            teacher_review_graph=build_teacher_review_graph(
-                checkpointer=checkpointer
+            teacher_review_graph=teacher_review_graph,
+            conversation_graph=build_conversation_agent_graph(
+                build_conversation_workflow_handlers(teacher_review_graph),
+                checkpointer=checkpointer,
             ),
             checkpointer=checkpointer,
             pool=pool,

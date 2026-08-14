@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     paper_agent_allowed_website_hosts: str = "openstax.org,www.openstax.org"
     paper_agent_question_collection: str = "paper_questions"
     paper_agent_retrieval_pool_size: int = Field(default=500, ge=10, le=5000)
+    paper_agent_tool_timeout_seconds: float = Field(default=30.0, ge=1.0, le=120.0)
+    paper_agent_tool_read_retry_count: int = Field(default=1, ge=0, le=3)
+    paper_agent_taxonomy_write_enabled: bool = False
 
     # Embedding
     embedding_model: str = "all-MiniLM-L6-v2"

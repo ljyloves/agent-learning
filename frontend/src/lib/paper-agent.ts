@@ -1,4 +1,4 @@
-import { ApiError, apiGet, apiPost, apiRequest } from "@/lib/api";
+import { ApiError, apiGet, apiPost, apiPut, apiRequest } from "@/lib/api";
 
 export type PaperJobStatus =
   | "queued"
@@ -78,6 +78,70 @@ export interface OptimizedPaperTaskCreate {
     exclude_question_ids: string[];
     random_seed: number;
   };
+}
+
+export type ConversationGraphStatus =
+  | "received"
+  | "needs_input"
+  | "form_fallback"
+  | "checking_feasibility"
+  | "infeasible"
+  | "awaiting_confirmation"
+  | "executing"
+  | "retryable"
+  | "completed"
+  | "cancelled"
+  | "failed";
+
+export interface PaperConversation {
+  conversation_id: string;
+  title: string | null;
+  status: "active" | "archived";
+  active_plan_version: number;
+  paper_job_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PaperConversationMessage {
+  message_id: string;
+  conversation_id: string;
+  sequence_no: number;
+  role: "teacher" | "assistant" | "system" | "tool";
+  content: string;
+  attributes: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface PaperConversationHistory {
+  conversation: PaperConversation;
+  messages: PaperConversationMessage[];
+}
+
+export interface ConversationPlanResponse {
+  conversation_id: string;
+  active_plan_version: number;
+  plan: OptimizedPaperTaskCreate | null;
+}
+
+export interface ConversationGraphResponse {
+  state: {
+    conversation_id: string;
+    message_id: string;
+    plan_version: number | null;
+    pending_action_id: string | null;
+    paper_job_id: string | null;
+    status: ConversationGraphStatus;
+    retry_count: number;
+    reports: Array<{
+      code: string;
+      summary: string;
+      details: Record<string, string | number | boolean | null>;
+    }>;
+    error_code: string | null;
+  };
+  interrupted: boolean;
+  interrupt_payload: Record<string, unknown> | null;
 }
 
 export interface OptimizedTaskResponse {
@@ -332,6 +396,76 @@ export function getOptimizedTask(jobId: string) {
 
 export function createOptimizedTask(payload: OptimizedPaperTaskCreate) {
   return apiPost<OptimizedTaskResponse>("/paper-agent/optimized-tasks", payload);
+}
+
+export function createPaperConversation(conversationId: string) {
+  return apiPost<PaperConversation>("/paper-agent/conversations", {
+    conversation_id: conversationId,
+    title: "对话式组卷",
+  });
+}
+
+export function getPaperConversation(conversationId: string) {
+  return apiGet<PaperConversation>(
+    `/paper-agent/conversations/${encodeURIComponent(conversationId)}`,
+    { cache: "no-store" },
+  );
+}
+
+export function getPaperConversationHistory(conversationId: string) {
+  return apiGet<PaperConversationHistory>(
+    `/paper-agent/conversations/${encodeURIComponent(conversationId)}/history`,
+    { cache: "no-store" },
+  );
+}
+
+export function getConversationPlan(conversationId: string) {
+  return apiGet<ConversationPlanResponse>(
+    `/paper-agent/conversations/${encodeURIComponent(conversationId)}/plan`,
+    { cache: "no-store" },
+  );
+}
+
+export function getConversationStatus(conversationId: string) {
+  return apiGet<ConversationGraphResponse | null>(
+    `/paper-agent/conversations/${encodeURIComponent(conversationId)}/status`,
+    { cache: "no-store" },
+  );
+}
+
+export function submitConversationMessage(
+  conversationId: string,
+  messageId: string,
+  content: string,
+) {
+  return apiPost<ConversationGraphResponse>(
+    `/paper-agent/conversations/${encodeURIComponent(conversationId)}/messages`,
+    { message_id: messageId, content },
+    { timeoutMs: 120_000 },
+  );
+}
+
+export function updateConversationPlan(
+  conversationId: string,
+  messageId: string,
+  plan: OptimizedPaperTaskCreate,
+) {
+  return apiPut<ConversationGraphResponse>(
+    `/paper-agent/conversations/${encodeURIComponent(conversationId)}/plan`,
+    { message_id: messageId, plan },
+    { timeoutMs: 120_000 },
+  );
+}
+
+export function commandConversation(
+  conversationId: string,
+  action: "confirm" | "cancel" | "retry",
+) {
+  return apiPost<ConversationGraphResponse>(
+    `/paper-agent/conversations/${encodeURIComponent(conversationId)}/${action}`,
+    {},
+    { timeoutMs: 120_000 },
+  );
 }
 
 export function getBiologyTaxonomy() {

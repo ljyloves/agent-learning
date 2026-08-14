@@ -16,6 +16,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     async with create_paper_graph_runtime() as runtime:
         app.state.paper_agent_graph = runtime.graph
         app.state.paper_agent_teacher_review_graph = runtime.teacher_review_graph
+        app.state.paper_agent_conversation_graph = runtime.conversation_graph
         app.state.paper_agent_checkpointer = runtime.checkpointer
         yield
 

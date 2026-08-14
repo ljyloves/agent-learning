@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 
 const navigation = [
   { href: "/", label: "工作台", short: "台", exact: true },
+  { href: "/paper-agent/conversation", label: "对话组卷", short: "聊" },
   { href: "/paper-agent/tasks", label: "组卷任务", short: "卷" },
   { href: "/knowledge", label: "教师资料", short: "资" },
 ];

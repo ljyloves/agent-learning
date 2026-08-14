@@ -20,6 +20,10 @@ from app.modules.paper_agent.graph.workflow import (
     select_workflow_branch,
     select_teacher_review_branch,
 )
+from app.modules.paper_agent.graph.conversation_workflow import (
+    ConversationWorkflowHandlers,
+    build_conversation_agent_graph,
+)
 from app.modules.paper_agent.nodes import (
     INITIALIZE_NODE_CONTRACT,
     MAIN_WORKFLOW_NODES,
@@ -31,6 +35,7 @@ from app.modules.paper_agent.nodes import (
 
 __all__ = [
     "GraphNodeContract",
+    "ConversationWorkflowHandlers",
     "INITIALIZE_NODE_CONTRACT",
     "InitializeNodeInput",
     "InitializeNodeOutput",
@@ -43,6 +48,7 @@ __all__ = [
     "PaperGraphState",
     "add_contract_node",
     "build_paper_agent_graph",
+    "build_conversation_agent_graph",
     "build_teacher_review_graph",
     "get_node_contract",
     "initialize_paper_agent",

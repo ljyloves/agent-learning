@@ -62,9 +62,14 @@ export function TaskCenter() {
           <h1>组卷任务</h1>
           <p className="page-description">查看组卷进度，快速进入待审核试卷继续处理。</p>
         </div>
-        <Link href="/paper-agent/tasks/new" className="button button-primary">
-          新建组卷 <span aria-hidden="true">+</span>
-        </Link>
+        <div className="heading-actions">
+          <Link href="/paper-agent/conversation" className="button button-primary">
+            对话组卷
+          </Link>
+          <Link href="/paper-agent/tasks/new" className="button button-secondary">
+            表单组卷 <span aria-hidden="true">+</span>
+          </Link>
+        </div>
       </section>
 
       <section className="task-toolbar" aria-label="任务筛选">

@@ -38,6 +38,10 @@ function getErrorMessage(status: number, details: unknown) {
   if (details && typeof details === "object" && "detail" in details) {
     const detail = (details as { detail?: unknown }).detail;
     if (typeof detail === "string" && detail.trim()) return detail;
+    if (detail && typeof detail === "object" && "message" in detail) {
+      const message = (detail as { message?: unknown }).message;
+      if (typeof message === "string" && message.trim()) return message;
+    }
   }
   if (status === 404) return "请求的内容不存在";
   if (status === 409) return "当前数据已发生变化，请刷新后重试";
@@ -87,4 +91,8 @@ export function apiGet<T>(path: string, options: RequestOptions = {}) {
 
 export function apiPost<T>(path: string, body: unknown, options: RequestOptions = {}) {
   return apiRequest<T>(path, { ...options, method: "POST", body });
+}
+
+export function apiPut<T>(path: string, body: unknown, options: RequestOptions = {}) {
+  return apiRequest<T>(path, { ...options, method: "PUT", body });
 }

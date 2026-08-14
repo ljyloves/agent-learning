@@ -1,3 +1,10 @@
+from app.models.conversation import (
+    ConversationMessageModel,
+    ConversationModel,
+    PaperPlanVersionModel,
+    PendingActionModel,
+    ToolExecutionModel,
+)
 from app.models.knowledge import KnowledgeDocument
 from app.models.paper_agent import (
     PaperJobModel,
@@ -18,11 +25,15 @@ from app.models.taxonomy import (
 )
 
 __all__ = [
+    "ConversationMessageModel",
+    "ConversationModel",
     "CoreCompetencyModel",
     "CurriculumModuleModel",
     "KnowledgeDocument",
     "KnowledgePointModel",
     "PaperJobModel",
+    "PaperPlanVersionModel",
+    "PendingActionModel",
     "PaperJobQuestionModel",
     "QuestionCoreCompetencyModel",
     "QuestionAnalysisModel",
@@ -32,4 +43,5 @@ __all__ = [
     "QuestionOptionModel",
     "QuestionResourceModel",
     "QuestionSourceModel",
+    "ToolExecutionModel",
 ]
